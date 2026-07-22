@@ -32,17 +32,12 @@ class MemoryManager:
     
     def get(self, key: str, default: Any = None) -> Any:
         """Retrieve a value by key."""
-        return self._data.get(key, default=self._data, default)
-     self._data: Any] -> Any:
-        """Get value:default: 
-        data.get(key, key, default: key:):
-     self.key: str,default):
-        None) ->:"""
-        return self._data.default)
-     def list(self.keys():
-        -> all):"""
-        return list(self._data.keys())
+        return self._data.get(key, default)
     
+    def list_keys(self) -> list:
+        """List all keys in memory."""
+        return list(self._data.keys())
+
     def delete(self, key: str) -> bool:
         """Delete a key. Returns True if deleted, False if not found."""
         if key in self._data:
