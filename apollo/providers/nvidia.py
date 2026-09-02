@@ -65,7 +65,7 @@ class NvidiaNIMProvider(BaseLLMProvider):
                 response = None
                 for retry_attempt in range(2):
                     try:
-                        response = await self.client.chat.completions.create(**kwargs, timeout=8.0)
+                        response = await self.client.chat.completions.create(**kwargs, timeout=25.0)
                         break
                     except Exception as err:
                         err_str = str(err).lower()
