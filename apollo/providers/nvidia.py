@@ -21,7 +21,7 @@ class NvidiaNIMProvider(BaseLLMProvider):
         if self._client is None:
             if not self.api_key:
                 logger.warning("NVIDIA_API_KEY is not set. NIM requests will fail if unauthenticated.")
-            self._client = AsyncOpenAI(api_key=self.api_key or "dummy_key", base_url=self.base_url)
+            self._client = AsyncOpenAI(api_key=self.api_key or "dummy_key", base_url=self.base_url, timeout=30.0)
         return self._client
 
     async def generate_response(
