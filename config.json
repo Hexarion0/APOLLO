@@ -1,20 +1,20 @@
 {
-  "//_comment": "APOLLO Gateway Configuration File. Edit any setting below to customize your AI assistant.",
+  "//_comment": "APOLLO Gateway Master Configuration. Sensitive secrets (NVIDIA_API_KEY, TELEGRAM_BOT_TOKEN) are loaded from .env for security.",
   "provider": {
-    "//_comment": "LLM Provider Settings (NVIDIA NIM or OpenAI-compatible endpoints)",
-    "api_key": "nvapi-your-key-here",
+    "//_comment": "NVIDIA NIM / OpenAI-compatible provider settings. API Key is read from .env (NVIDIA_API_KEY)",
+    "api_key": "",
     "base_url": "https://integrate.api.nvidia.com/v1",
     "model": "nvidia/nemotron-3-super-120b-a12b",
     "temperature": 0.7,
     "max_tokens": 2048
   },
   "telegram": {
-    "//_comment": "Telegram Channel Connection and Single-Owner Authentication",
-    "bot_token": "YOUR_TELEGRAM_BOT_TOKEN",
+    "//_comment": "Telegram Bot settings. Bot Token is read from .env (TELEGRAM_BOT_TOKEN)",
+    "bot_token": "",
     "owner_id": 6579740425
   },
   "gateway": {
-    "//_comment": "Core Gateway Execution Parameters",
+    "//_comment": "Core Gateway Execution Controls",
     "max_turns": 12,
     "persona_file": "persona.txt"
   },
