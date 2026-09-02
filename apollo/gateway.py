@@ -136,6 +136,20 @@ class ApolloGateway:
                     text=f"⏰ *Autonomous Action Result* (`{task_id}`):\n\n{response}",
                 )
 
+    def _sanitize_chat_history(self, history: List[Dict[str, Any]]) -> List[ChatMessage]:
+        """Sanitize conversation history to merge consecutive same-role messages for LLM API compatibility."""
+        sanitized: List[ChatMessage] = []
+        for h in history:
+            role = h.get("role")
+            content = h.get("content")
+            if not role or not content:
+                continue
+            if sanitized and sanitized[-1].role == role:
+                sanitized[-1].content = f"{sanitized[-1].content}\n{content}"
+            else:
+                sanitized.append(ChatMessage(role=role, content=content))
+        return sanitized
+
     async def process_message(self, sender_id: str, user_message: str, max_turns: Optional[int] = None) -> str:
         """Process an incoming text message from the owner through the LLM tool execution loop."""
         if max_turns is None:
@@ -151,8 +165,7 @@ class ApolloGateway:
 
         system_prompt = self.get_system_prompt()
         messages: List[ChatMessage] = [ChatMessage(role="system", content=system_prompt)]
-        for h in history:
-            messages.append(ChatMessage(role=h["role"], content=h["content"]))
+        messages.extend(self._sanitize_chat_history(history))
 
         tool_schemas = self.tools.get_openai_schemas()
 
