@@ -62,7 +62,22 @@ class NvidiaNIMProvider(BaseLLMProvider):
 
             logger.info(f"Sending LLM request using model '{model_name}'...")
             try:
-                response = await self.client.chat.completions.create(**kwargs, timeout=8.0)
+                response = None
+                for retry_attempt in range(2):
+                    try:
+                        response = await self.client.chat.completions.create(**kwargs, timeout=8.0)
+                        break
+                    except Exception as err:
+                        err_str = str(err).lower()
+                        if ("503" in err_str or "resourceexhausted" in err_str or "429" in err_str) and retry_attempt == 0:
+                            logger.warning(f"Model '{model_name}' hit worker limit (503/429). Retrying in 0.5s...")
+                            await asyncio.sleep(0.5)
+                        else:
+                            raise err
+
+                if response is None:
+                    raise RuntimeError(f"Failed to get response from model '{model_name}'.")
+
                 choice = response.choices[0]
                 message = choice.message
 

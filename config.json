@@ -6,8 +6,7 @@
     "base_url": "https://integrate.api.nvidia.com/v1",
     "model": "nvidia/nemotron-3-super-120b-a12b",
     "fallback_models": [
-      "meta/llama-3.2-11b-vision-instruct",
-      "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning"
+      "meta/llama-3.2-11b-vision-instruct"
     ],
     "temperature": 0.7,
     "max_tokens": 2048
