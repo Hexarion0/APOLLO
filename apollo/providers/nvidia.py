@@ -10,7 +10,7 @@ logger = logging.getLogger("apollo.providers.nvidia")
 class NvidiaNIMProvider(BaseLLMProvider):
     """NVIDIA NIM API Provider implementation using OpenAI-compatible interface."""
 
-    def __init__(self, api_key: str, base_url: str = "https://integrate.api.nvidia.com/v1", model: str = "meta/llama-3.3-70b-instruct"):
+    def __init__(self, api_key: str, base_url: str = "https://integrate.api.nvidia.com/v1", model: str = "nvidia/nemotron-3-super-120b-a12b"):
         self.api_key = api_key
         self.base_url = base_url
         self.model = model

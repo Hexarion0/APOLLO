@@ -8,11 +8,13 @@ from dotenv import load_dotenv
 
 logger = logging.getLogger("apollo.config")
 
+DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+
 @dataclass
 class ProviderConfig:
     api_key: str = ""
     base_url: str = "https://integrate.api.nvidia.com/v1"
-    model: str = "meta/llama-3.3-70b-instruct"
+    model: str = DEFAULT_MODEL
     temperature: float = 0.7
     max_tokens: int = 2048
 
@@ -49,8 +51,15 @@ class Config:
         c_path = Path(config_path)
         if c_path.exists():
             try:
-                with open(c_path, "r", encoding="utf-8") as f:
-                    json_data = json.load(f)
+                raw_text = c_path.read_text(encoding="utf-8")
+                # Strip single line comments starting with // or #
+                lines = []
+                for line in raw_text.splitlines():
+                    s = line.strip()
+                    if s.startswith("//") or s.startswith("#"):
+                        continue
+                    lines.append(line)
+                json_data = json.loads("\n".join(lines))
                 logger.info(f"Loaded master configuration from '{c_path}'.")
             except Exception as e:
                 logger.warning(f"Error reading configuration file '{c_path}': {e}")
@@ -64,7 +73,7 @@ class Config:
         # Environment variable overrides take precedence if non-empty
         api_key = os.getenv("NVIDIA_API_KEY") or provider_json.get("api_key", "")
         base_url = os.getenv("NVIDIA_BASE_URL") or provider_json.get("base_url", "https://integrate.api.nvidia.com/v1")
-        model = os.getenv("NVIDIA_MODEL") or provider_json.get("model", "meta/llama-3.3-70b-instruct")
+        model = os.getenv("NVIDIA_MODEL") or provider_json.get("model", DEFAULT_MODEL)
         temperature = float(provider_json.get("temperature", 0.7))
         max_tokens = int(provider_json.get("max_tokens", 2048))
 
