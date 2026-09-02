@@ -25,6 +25,9 @@ class Config:
     policy_file: Path = Path("policy.json")
     audit_log_file: Path = Path("audit.log")
     database_path: Path = Path("apollo.db")
+    persona_file: Path = Path("persona.txt")
+    proactive_enabled: bool = True
+    proactive_interval_hours: int = 4
 
     @classmethod
     def load_from_env(cls, env_file: Optional[str] = None) -> "Config":
@@ -39,6 +42,14 @@ class Config:
         except ValueError:
             owner_id = 0
 
+        proactive_enabled_str = os.getenv("PROACTIVE_ENABLED", "true").lower()
+        proactive_enabled = proactive_enabled_str in ("true", "1", "yes")
+
+        try:
+            proactive_interval = int(os.getenv("PROACTIVE_INTERVAL_HOURS", "4"))
+        except ValueError:
+            proactive_interval = 4
+
         return cls(
             provider=ProviderConfig(
                 api_key=os.getenv("NVIDIA_API_KEY", ""),
@@ -52,4 +63,7 @@ class Config:
             policy_file=Path(os.getenv("POLICY_FILE", "policy.json")),
             audit_log_file=Path(os.getenv("AUDIT_LOG_FILE", "audit.log")),
             database_path=Path(os.getenv("DATABASE_PATH", "apollo.db")),
+            persona_file=Path(os.getenv("PERSONA_FILE", "persona.txt")),
+            proactive_enabled=proactive_enabled,
+            proactive_interval_hours=proactive_interval,
         )

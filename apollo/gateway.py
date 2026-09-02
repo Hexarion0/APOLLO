@@ -24,16 +24,9 @@ from apollo.tools.builtins import (
 )
 from apollo.tools.registry import ToolRegistry
 
+from apollo.persona import DEFAULT_PERSONA_PROMPT, get_proactive_prompt_for_time
+
 logger = logging.getLogger("apollo.gateway")
-
-SYSTEM_PROMPT = """You are APOLLO ("Adaptive Personal Operator for Learning, Life & Optimization"), a self-hosted personal AI assistant gateway for a single operator.
-
-You are equipped with tools to interact with the host system, manage files, store persistent memories, and schedule background tasks.
-When calling tools:
-- Always use precise parameters.
-- If a tool action is sensitive or destructive, explain your intent clearly.
-- Always be helpful, concise, and direct in your responses to your owner.
-"""
 
 class ApolloGateway:
     """Core APOLLO Gateway orchestrator."""
@@ -69,6 +62,17 @@ class ApolloGateway:
         # Scheduler
         self.scheduler = BackgroundScheduler(task_callback=self._handle_scheduled_task)
 
+    def get_system_prompt(self) -> str:
+        """Load personality prompt from persona file if available."""
+        if self.config.persona_file and self.config.persona_file.exists():
+            try:
+                content = self.config.persona_file.read_text(encoding="utf-8").strip()
+                if content:
+                    return content
+            except Exception as e:
+                logger.warning(f"Error reading persona file '{self.config.persona_file}': {e}")
+        return DEFAULT_PERSONA_PROMPT
+
     def _register_default_tools(self) -> None:
         """Register built-in system tools."""
         self.tools.register(GetSystemInfoTool())
@@ -83,6 +87,18 @@ class ApolloGateway:
         """Start APOLLO Gateway engine, channel, and scheduler."""
         logger.info("Initializing APOLLO Gateway...")
         self.scheduler.start()
+
+        # Register proactive persona check-in if enabled
+        if self.config.proactive_enabled:
+            interval_sec = max(60, self.config.proactive_interval_hours * 3600)
+            self.scheduler.add_task(
+                task_id="proactive_persona_checkin",
+                name="Proactive Persona Check-in",
+                prompt="Trigger spontaneous persona check-in",
+                interval_seconds=interval_sec,
+            )
+            logger.info(f"Registered Proactive Persona engine (interval={self.config.proactive_interval_hours}h).")
+
         if self.channel:
             await self.channel.start()
         logger.info("APOLLO Gateway is online and ready.")
@@ -99,12 +115,22 @@ class ApolloGateway:
         """Execute autonomous background scheduled task and notify owner."""
         logger.info(f"Executing scheduled task [{task_id}]: {prompt}")
         owner_id = str(self.config.telegram.owner_id)
-        response = await self.process_message(sender_id=owner_id, user_message=f"[Scheduled Task: {prompt}]")
-        if self.channel and owner_id != "0":
-            await self.channel.send_message(
-                recipient_id=owner_id,
-                text=f"⏰ *Autonomous Action Result* (`{task_id}`):\n\n{response}",
+
+        if task_id == "proactive_persona_checkin":
+            proactive_prompt = get_proactive_prompt_for_time()
+            response = await self.process_message(
+                sender_id=owner_id,
+                user_message=f"[System Event: Initiating spontaneous check-in. Instructions: {proactive_prompt}]",
             )
+            if self.channel and owner_id != "0":
+                await self.channel.send_message(recipient_id=owner_id, text=response)
+        else:
+            response = await self.process_message(sender_id=owner_id, user_message=f"[Scheduled Task: {prompt}]")
+            if self.channel and owner_id != "0":
+                await self.channel.send_message(
+                    recipient_id=owner_id,
+                    text=f"⏰ *Autonomous Action Result* (`{task_id}`):\n\n{response}",
+                )
 
     async def process_message(self, sender_id: str, user_message: str, max_turns: int = 5) -> str:
         """Process an incoming text message from the owner through the LLM tool execution loop."""
@@ -116,7 +142,8 @@ class ApolloGateway:
         # Load recent context
         history = self.memory_store.get_recent_chat_history(channel=channel_name, sender_id=sender_id, limit=10)
 
-        messages: List[ChatMessage] = [ChatMessage(role="system", content=SYSTEM_PROMPT)]
+        system_prompt = self.get_system_prompt()
+        messages: List[ChatMessage] = [ChatMessage(role="system", content=system_prompt)]
         for h in history:
             messages.append(ChatMessage(role=h["role"], content=h["content"]))
 
