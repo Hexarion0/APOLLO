@@ -176,6 +176,10 @@ class ApolloGateway:
 
             if not response.tool_calls:
                 final_content = response.content or "No response generated."
+                if response.was_fallback and response.model_used:
+                    logger.info(f"Primary model unavailable. Response delivered via fallback model '{response.model_used}'.")
+                    final_content += f"\n\n_(ℹ️ Responded via fallback model: `{response.model_used}`)_"
+
                 messages.append(ChatMessage(role="assistant", content=final_content))
                 self.memory_store.add_chat_message(channel=channel_name, sender_id=sender_id, role="assistant", content=final_content)
                 return final_content

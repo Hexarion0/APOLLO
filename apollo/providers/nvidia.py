@@ -89,6 +89,8 @@ class NvidiaNIMProvider(BaseLLMProvider):
                     tool_calls=parsed_tool_calls,
                     finish_reason=choice.finish_reason,
                     raw_response=response,
+                    model_used=model_name,
+                    was_fallback=(model_name != self.model),
                 )
 
             except Exception as e:

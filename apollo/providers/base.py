@@ -45,6 +45,8 @@ class LLMResponse:
     tool_calls: List[ToolCall] = field(default_factory=list)
     finish_reason: Optional[str] = None
     raw_response: Optional[Any] = None
+    model_used: Optional[str] = None
+    was_fallback: bool = False
 
 class BaseLLMProvider(ABC):
     """Abstract interface for LLM providers (NVIDIA NIM, Anthropic, OpenAI, Ollama, etc.)."""
