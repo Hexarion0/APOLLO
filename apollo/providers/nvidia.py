@@ -62,7 +62,7 @@ class NvidiaNIMProvider(BaseLLMProvider):
 
             logger.info(f"Sending LLM request using model '{model_name}'...")
             try:
-                response = await self.client.chat.completions.create(**kwargs)
+                response = await self.client.chat.completions.create(**kwargs, timeout=8.0)
                 choice = response.choices[0]
                 message = choice.message
 
