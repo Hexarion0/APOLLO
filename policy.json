@@ -13,6 +13,7 @@
     "read_file": "logged",
     "git_status": "auto",
     "git_diff": "logged",
+    "import_memory": "logged",
     "store_memory": "logged",
     "write_file": "logged",
     "execute_command": "logged",

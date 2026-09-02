@@ -274,3 +274,25 @@ class GitDiffTool(BaseTool):
             "diff_output": stdout_bytes.decode("utf-8", errors="replace")[:3000],
             "stderr": stderr_bytes.decode("utf-8", errors="replace"),
         }
+
+class ImportMemoryTool(BaseTool):
+    name = "import_memory"
+    description = "Import an external OpenClaw memory file (.json, .md, or .db) into APOLLO's persistent SQLite memory database."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "file_path": {
+                "type": "string",
+                "description": "Path to the OpenClaw memory file (.json, .md, or .db)",
+            },
+        },
+        "required": ["file_path"],
+    }
+
+    def __init__(self, memory_store: SQLiteMemoryStore):
+        self.memory_store = memory_store
+
+    async def execute(self, file_path: str, **kwargs: Any) -> Dict[str, Any]:
+        from apollo.memory.importer import import_openclaw_memory
+        path = Path(file_path).expanduser().resolve()
+        return import_openclaw_memory(path, self.memory_store)

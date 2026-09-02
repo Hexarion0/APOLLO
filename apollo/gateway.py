@@ -19,6 +19,7 @@ from apollo.tools.builtins import (
     GetSystemInfoTool,
     GitDiffTool,
     GitStatusTool,
+    ImportMemoryTool,
     ReadFileTool,
     RecallMemoryTool,
     StoreMemoryTool,
@@ -87,6 +88,7 @@ class ApolloGateway:
         self.tools.register(GitDiffTool())
         self.tools.register(StoreMemoryTool(memory_store=self.memory_store))
         self.tools.register(RecallMemoryTool(memory_store=self.memory_store))
+        self.tools.register(ImportMemoryTool(memory_store=self.memory_store))
 
     async def start(self) -> None:
         """Start APOLLO Gateway engine, channel, and scheduler."""
