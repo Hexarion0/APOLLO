@@ -14,7 +14,8 @@ DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b"
 class ProviderConfig:
     api_key: str = ""
     base_url: str = "https://integrate.api.nvidia.com/v1"
-    model: str = DEFAULT_MODEL
+    model: str = "nvidia/nemotron-3-ultra-550b-a55b"
+    fallback_models: List[str] = field(default_factory=lambda: ["nvidia/nemotron-3-super-120b-a12b", "meta/llama-3.2-11b-vision-instruct"])
     temperature: float = 0.7
     max_tokens: int = 2048
 
@@ -70,10 +71,15 @@ class Config:
         proactive_json = json_data.get("proactive", {})
         paths_json = json_data.get("paths", {})
 
-        # Environment variable overrides take precedence if non-empty
         api_key = os.getenv("NVIDIA_API_KEY") or provider_json.get("api_key", "")
         base_url = os.getenv("NVIDIA_BASE_URL") or provider_json.get("base_url", "https://integrate.api.nvidia.com/v1")
-        model = os.getenv("NVIDIA_MODEL") or provider_json.get("model", DEFAULT_MODEL)
+        model = os.getenv("NVIDIA_MODEL") or provider_json.get("model", "nvidia/nemotron-3-ultra-550b-a55b")
+        fallback_models_env = os.getenv("FALLBACK_MODELS")
+        if fallback_models_env:
+            fallback_models = [m.strip() for m in fallback_models_env.split(",") if m.strip()]
+        else:
+            fallback_models = provider_json.get("fallback_models", ["nvidia/nemotron-3-super-120b-a12b", "meta/llama-3.2-11b-vision-instruct"])
+
         temperature = float(provider_json.get("temperature", 0.7))
         max_tokens = int(provider_json.get("max_tokens", 2048))
 
@@ -114,6 +120,7 @@ class Config:
                 api_key=api_key,
                 base_url=base_url,
                 model=model,
+                fallback_models=fallback_models,
                 temperature=temperature,
                 max_tokens=max_tokens,
             ),

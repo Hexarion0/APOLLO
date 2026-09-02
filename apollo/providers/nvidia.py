@@ -10,10 +10,17 @@ logger = logging.getLogger("apollo.providers.nvidia")
 class NvidiaNIMProvider(BaseLLMProvider):
     """NVIDIA NIM API Provider implementation using OpenAI-compatible interface."""
 
-    def __init__(self, api_key: str, base_url: str = "https://integrate.api.nvidia.com/v1", model: str = "nvidia/nemotron-3-super-120b-a12b"):
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = "https://integrate.api.nvidia.com/v1",
+        model: str = "nvidia/nemotron-3-ultra-550b-a55b",
+        fallback_models: Optional[List[str]] = None,
+    ):
         self.api_key = api_key
         self.base_url = base_url
         self.model = model
+        self.fallback_models = fallback_models if fallback_models is not None else ["nvidia/nemotron-3-super-120b-a12b", "meta/llama-3.2-11b-vision-instruct"]
         self._client: Optional[AsyncOpenAI] = None
 
     @property
@@ -31,53 +38,56 @@ class NvidiaNIMProvider(BaseLLMProvider):
         temperature: float = 0.7,
         max_tokens: Optional[int] = 1024,
     ) -> LLMResponse:
-        formatted_messages = []
-        for msg in messages:
-            formatted_messages.append(msg.to_dict())
+        formatted_messages = [msg.to_dict() for msg in messages]
 
-        kwargs: Dict[str, Any] = {
-            "model": self.model,
-            "messages": formatted_messages,
-            "temperature": temperature,
-        }
-        if max_tokens:
-            kwargs["max_tokens"] = max_tokens
-        if tools:
-            kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
+        candidate_models = [self.model] + [m for m in self.fallback_models if m != self.model]
+        last_exception = None
 
-        logger.debug(f"Sending request to NVIDIA NIM ({self.model}) at {self.base_url}")
-        
-        try:
-            response = await self.client.chat.completions.create(**kwargs)
-            choice = response.choices[0]
-            message = choice.message
+        for model_name in candidate_models:
+            kwargs: Dict[str, Any] = {
+                "model": model_name,
+                "messages": formatted_messages,
+                "temperature": temperature,
+            }
+            if max_tokens:
+                kwargs["max_tokens"] = max_tokens
+            if tools:
+                kwargs["tools"] = tools
+                kwargs["tool_choice"] = "auto"
 
-            parsed_tool_calls: List[ToolCall] = []
-            if message.tool_calls:
-                for tc in message.tool_calls:
-                    arguments_dict = {}
-                    if tc.function.arguments:
-                        try:
-                            arguments_dict = json.loads(tc.function.arguments)
-                        except json.JSONDecodeError:
-                            logger.warning(f"Failed to parse tool call arguments as JSON: {tc.function.arguments}")
-                            arguments_dict = {"raw": tc.function.arguments}
-                    parsed_tool_calls.append(
-                        ToolCall(
-                            id=tc.id,
-                            name=tc.function.name,
-                            arguments=arguments_dict,
+            logger.info(f"Sending LLM request using model '{model_name}'...")
+            try:
+                response = await self.client.chat.completions.create(**kwargs)
+                choice = response.choices[0]
+                message = choice.message
+
+                parsed_tool_calls: List[ToolCall] = []
+                if message.tool_calls:
+                    for tc in message.tool_calls:
+                        arguments_dict = {}
+                        if tc.function.arguments:
+                            try:
+                                arguments_dict = json.loads(tc.function.arguments)
+                            except json.JSONDecodeError:
+                                logger.warning(f"Failed to parse tool call arguments as JSON: {tc.function.arguments}")
+                                arguments_dict = {"raw": tc.function.arguments}
+                        parsed_tool_calls.append(
+                            ToolCall(
+                                id=tc.id,
+                                name=tc.function.name,
+                                arguments=arguments_dict,
+                            )
                         )
-                    )
 
-            return LLMResponse(
-                content=message.content,
-                tool_calls=parsed_tool_calls,
-                finish_reason=choice.finish_reason,
-                raw_response=response,
-            )
+                return LLMResponse(
+                    content=message.content,
+                    tool_calls=parsed_tool_calls,
+                    finish_reason=choice.finish_reason,
+                    raw_response=response,
+                )
 
-        except Exception as e:
-            logger.error(f"NVIDIA NIM Provider error: {e}")
-            raise RuntimeError(f"NVIDIA NIM Provider failed: {e}") from e
+            except Exception as e:
+                logger.warning(f"Model '{model_name}' failed or timed out: {e}. Trying fallback models if available...")
+                last_exception = e
+
+        raise RuntimeError(f"All attempted NIM models failed. Last error: {last_exception}") from last_exception

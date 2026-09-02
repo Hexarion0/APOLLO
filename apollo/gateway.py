@@ -53,6 +53,7 @@ class ApolloGateway:
                 api_key=config.provider.api_key,
                 base_url=config.provider.base_url,
                 model=config.provider.model,
+                fallback_models=config.provider.fallback_models,
             )
 
         self.channel = channel
