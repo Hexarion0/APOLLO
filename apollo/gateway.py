@@ -17,6 +17,8 @@ from apollo.tools.builtins import (
     ExecuteCommandTool,
     GetCurrentTimeTool,
     GetSystemInfoTool,
+    GitDiffTool,
+    GitStatusTool,
     ReadFileTool,
     RecallMemoryTool,
     StoreMemoryTool,
@@ -80,6 +82,8 @@ class ApolloGateway:
         self.tools.register(ReadFileTool())
         self.tools.register(WriteFileTool())
         self.tools.register(ExecuteCommandTool())
+        self.tools.register(GitStatusTool())
+        self.tools.register(GitDiffTool())
         self.tools.register(StoreMemoryTool(memory_store=self.memory_store))
         self.tools.register(RecallMemoryTool(memory_store=self.memory_store))
 
@@ -132,7 +136,7 @@ class ApolloGateway:
                     text=f"⏰ *Autonomous Action Result* (`{task_id}`):\n\n{response}",
                 )
 
-    async def process_message(self, sender_id: str, user_message: str, max_turns: int = 5) -> str:
+    async def process_message(self, sender_id: str, user_message: str, max_turns: int = 12) -> str:
         """Process an incoming text message from the owner through the LLM tool execution loop."""
         self.auth_guard.validate_or_raise(sender_id)
 

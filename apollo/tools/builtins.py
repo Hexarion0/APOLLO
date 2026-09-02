@@ -222,3 +222,55 @@ class RecallMemoryTool(BaseTool):
             "count": len(results),
             "results": results,
         }
+
+class GitStatusTool(BaseTool):
+    name = "git_status"
+    description = "Check git repository working tree status (staged, unstaged, and untracked files)."
+    parameters = {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    }
+
+    async def execute(self, **kwargs: Any) -> Dict[str, Any]:
+        proc = await asyncio.create_subprocess_shell(
+            "git status",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_bytes, stderr_bytes = await proc.communicate()
+        return {
+            "exit_code": proc.returncode,
+            "output": stdout_bytes.decode("utf-8", errors="replace"),
+            "stderr": stderr_bytes.decode("utf-8", errors="replace"),
+        }
+
+class GitDiffTool(BaseTool):
+    name = "git_diff"
+    description = "View git diff summary or detailed changes."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "staged": {
+                "type": "boolean",
+                "description": "If true, view staged changes (--staged)",
+                "default": False,
+            },
+        },
+        "required": [],
+    }
+
+    async def execute(self, staged: bool = False, **kwargs: Any) -> Dict[str, Any]:
+        cmd = "git diff --staged" if staged else "git diff"
+        proc = await asyncio.create_subprocess_shell(
+            cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout_bytes, stderr_bytes = await proc.communicate()
+        return {
+            "command": cmd,
+            "exit_code": proc.returncode,
+            "diff_output": stdout_bytes.decode("utf-8", errors="replace")[:3000],
+            "stderr": stderr_bytes.decode("utf-8", errors="replace"),
+        }

@@ -11,6 +11,8 @@
     "get_current_time": "auto",
     "recall_memory": "auto",
     "read_file": "logged",
+    "git_status": "auto",
+    "git_diff": "logged",
     "store_memory": "logged",
     "write_file": "logged",
     "execute_command": "logged",
