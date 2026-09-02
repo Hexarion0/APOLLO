@@ -247,6 +247,9 @@ class ApolloGateway:
 
                 # Format tool output for message history
                 tool_output_str = json.dumps(result_data or {"status": action_status, "error": error_msg}, ensure_ascii=False)
+                if len(tool_output_str) > 2500:
+                    tool_output_str = tool_output_str[:2500] + "... [truncated for length]"
+
                 messages.append(
                     ChatMessage(
                         role="tool",

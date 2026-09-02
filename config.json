@@ -2,6 +2,11 @@
   "//_comment": "APOLLO Gateway Master Configuration. Sensitive secrets (NVIDIA_API_KEY, TELEGRAM_BOT_TOKEN) are loaded from .env for security.",
   "provider": {
     "//_comment": "NVIDIA NIM / OpenAI-compatible provider settings. API Key is read from .env (NVIDIA_API_KEY)",
+    "model": "nvidia/nemotron-3-ultra-550b-a55b",
+    "fallback_models": [
+      "nvidia/nemotron-3-super-120b-a12b",
+      "meta/llama-3.2-11b-vision-instruct"
+    ]
     "api_key": "",
     "base_url": "https://integrate.api.nvidia.com/v1",
     "temperature": 0.7,
