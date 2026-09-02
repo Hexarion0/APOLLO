@@ -1,0 +1,19 @@
+{
+  "version": "1.0",
+  "default_tier": "auto",
+  "tiers": {
+    "auto": "Runs immediately without explicit log or confirmation requirement",
+    "logged": "Runs immediately and records action details to audit log",
+    "confirm": "Requires owner approval via channel before execution"
+  },
+  "tools": {
+    "get_system_info": "auto",
+    "get_current_time": "auto",
+    "recall_memory": "auto",
+    "read_file": "logged",
+    "store_memory": "logged",
+    "write_file": "logged",
+    "execute_command": "logged",
+    "schedule_task": "confirm"
+  }
+}
