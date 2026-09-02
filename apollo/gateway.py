@@ -136,8 +136,11 @@ class ApolloGateway:
                     text=f"⏰ *Autonomous Action Result* (`{task_id}`):\n\n{response}",
                 )
 
-    async def process_message(self, sender_id: str, user_message: str, max_turns: int = 12) -> str:
+    async def process_message(self, sender_id: str, user_message: str, max_turns: Optional[int] = None) -> str:
         """Process an incoming text message from the owner through the LLM tool execution loop."""
+        if max_turns is None:
+            max_turns = self.config.gateway.max_turns
+
         self.auth_guard.validate_or_raise(sender_id)
 
         channel_name = "telegram" if self.channel else "local"
