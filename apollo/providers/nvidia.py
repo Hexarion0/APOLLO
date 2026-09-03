@@ -31,7 +31,7 @@ class NvidiaNIMProvider(BaseLLMProvider):
             self._client = AsyncOpenAI(
                 api_key=self.api_key or "dummy_key",
                 base_url=self.base_url,
-                timeout=60.0,
+                timeout=120.0,
                 max_retries=1,
             )
         return self._client
@@ -65,7 +65,7 @@ class NvidiaNIMProvider(BaseLLMProvider):
                 response = None
                 for retry_attempt in range(2):
                     try:
-                        response = await self.client.chat.completions.create(**kwargs, timeout=25.0)
+                        response = await self.client.chat.completions.create(**kwargs, timeout=90.0)
                         break
                     except Exception as err:
                         err_str = str(err).lower()

@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from apollo.audit import AuditLogger
 from apollo.auth import SingleOwnerAuthGuard
 from apollo.channels.base import BaseChannel
+from apollo.chat_log import ChatFileLogger
 from apollo.config import Config
 from apollo.memory.store import SQLiteMemoryStore
 from apollo.policy import PermissionTier, PolicyEngine
@@ -25,6 +26,7 @@ from apollo.tools.builtins import (
     StoreMemoryTool,
     WriteFileTool,
 )
+from apollo.tools.internet import FetchURLTool, GetWeatherTool, WebSearchTool
 from apollo.tools.registry import ToolRegistry
 
 from apollo.persona import DEFAULT_PERSONA_PROMPT, get_proactive_prompt_for_time
@@ -44,6 +46,7 @@ class ApolloGateway:
         self.auth_guard = SingleOwnerAuthGuard(owner_id=config.telegram.owner_id)
         self.policy_engine = PolicyEngine(policy_path=config.policy_file)
         self.audit_logger = AuditLogger(log_path=config.audit_log_file)
+        self.chat_logger = ChatFileLogger(log_path=config.chat_log_file)
         self.memory_store = SQLiteMemoryStore(db_path=config.database_path)
 
         # Provider initialization (defaults to NVIDIA NIM if not supplied)
@@ -89,6 +92,10 @@ class ApolloGateway:
         self.tools.register(StoreMemoryTool(memory_store=self.memory_store))
         self.tools.register(RecallMemoryTool(memory_store=self.memory_store))
         self.tools.register(ImportMemoryTool(memory_store=self.memory_store))
+        # Internet tools
+        self.tools.register(WebSearchTool())
+        self.tools.register(FetchURLTool())
+        self.tools.register(GetWeatherTool())
 
     async def start(self) -> None:
         """Start APOLLO Gateway engine, channel, and scheduler."""
@@ -116,6 +123,7 @@ class ApolloGateway:
         self.scheduler.stop()
         if self.channel:
             await self.channel.stop()
+        self.chat_logger.log_session_end()
         logger.info("APOLLO Gateway offline.")
 
     async def _handle_scheduled_task(self, task_id: str, prompt: str) -> None:
@@ -162,6 +170,7 @@ class ApolloGateway:
 
         channel_name = "telegram" if self.channel else "local"
         self.memory_store.add_chat_message(channel=channel_name, sender_id=sender_id, role="user", content=user_message)
+        self.chat_logger.log_user(user_message, sender_id=sender_id)
 
         # Load recent context
         history = self.memory_store.get_recent_chat_history(channel=channel_name, sender_id=sender_id, limit=10)
@@ -184,6 +193,7 @@ class ApolloGateway:
 
                 messages.append(ChatMessage(role="assistant", content=final_content))
                 self.memory_store.add_chat_message(channel=channel_name, sender_id=sender_id, role="assistant", content=final_content)
+                self.chat_logger.log_assistant(final_content)
                 return final_content
 
             # LLM requested tool calls
@@ -195,6 +205,7 @@ class ApolloGateway:
                 tier = self.policy_engine.get_tier(tool_name)
 
                 logger.info(f"Tool call requested: {tool_name} (tier: {tier.value}) args={arguments}")
+                self.chat_logger.log_tool_call(tool_name, arguments)
 
                 # Evaluate Policy Tier
                 should_execute = False
@@ -251,6 +262,13 @@ class ApolloGateway:
                         error=error_msg,
                     )
 
+                # Log tool execution to chat log
+                self.chat_logger.log_tool_result(
+                    tool_name=tool_name,
+                    result=result_data or {"status": action_status, "error": error_msg},
+                    status=action_status,
+                )
+
                 # Format tool output for message history
                 tool_output_str = json.dumps(result_data or {"status": action_status, "error": error_msg}, ensure_ascii=False)
                 if len(tool_output_str) > 2500:
@@ -265,4 +283,6 @@ class ApolloGateway:
                     )
                 )
 
-        return "Maximum conversation turns reached without final response."
+        timeout_msg = "Maximum conversation turns reached without final response."
+        self.chat_logger.log_assistant(timeout_msg)
+        return timeout_msg

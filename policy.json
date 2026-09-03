@@ -17,6 +17,9 @@
     "store_memory": "logged",
     "write_file": "logged",
     "execute_command": "logged",
-    "schedule_task": "confirm"
+    "schedule_task": "confirm",
+    "web_search": "logged",
+    "fetch_url": "logged",
+    "get_weather": "auto"
   }
 }

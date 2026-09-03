@@ -36,6 +36,7 @@ class Config:
     gateway: GatewayConfig = field(default_factory=GatewayConfig)
     policy_file: Path = Path("policy.json")
     audit_log_file: Path = Path("audit.log")
+    chat_log_file: Path = Path("chat.log")
     database_path: Path = Path("apollo.db")
     persona_file: Path = Path("persona.txt")
     proactive_enabled: bool = True
@@ -113,6 +114,7 @@ class Config:
 
         policy_file = Path(os.getenv("POLICY_FILE") or paths_json.get("policy_file") or "policy.json")
         audit_log_file = Path(os.getenv("AUDIT_LOG_FILE") or paths_json.get("audit_log_file") or "audit.log")
+        chat_log_file = Path(os.getenv("CHAT_LOG_FILE") or paths_json.get("chat_log_file") or "chat.log")
         database_path = Path(os.getenv("DATABASE_PATH") or paths_json.get("database_path") or "apollo.db")
 
         return cls(
@@ -134,6 +136,7 @@ class Config:
             ),
             policy_file=policy_file,
             audit_log_file=audit_log_file,
+            chat_log_file=chat_log_file,
             database_path=database_path,
             persona_file=persona_file,
             proactive_enabled=proactive_enabled,

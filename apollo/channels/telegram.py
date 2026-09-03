@@ -1,8 +1,11 @@
 import asyncio
+import html as html_lib
 import json
 import logging
+import re
 from typing import Any, Callable, Dict, Optional, Awaitable
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -16,6 +19,111 @@ from apollo.auth import SingleOwnerAuthGuard
 from apollo.channels.base import BaseChannel
 
 logger = logging.getLogger("apollo.channels.telegram")
+
+
+# ---------------------------------------------------------------------------
+# Markdown → Telegram HTML converter
+# ---------------------------------------------------------------------------
+
+def _md_to_html(text: str) -> str:
+    """
+    Convert a standard Markdown string to Telegram HTML (parse_mode=HTML).
+
+    Handles:
+      - Fenced code blocks  ```lang\\ncode```  →  <pre><code class="...">
+      - Inline code         `code`             →  <code>
+      - Bold                **text** / __text__ →  <b>
+      - Italic              *text*             →  <i>
+      - Strikethrough       ~~text~~           →  <s>
+      - ATX headers         # / ## / ###       →  <b> (Telegram has no headings)
+      - Remaining text has HTML-unsafe chars escaped (<, >, &)
+
+    Tables are left as-is (Telegram doesn't support them; the text is still
+    readable as plain ASCII art).
+    """
+
+    # Step 1 — pull out fenced code blocks so their content isn't touched.
+    code_blocks: list[str] = []
+
+    def _replace_fenced(m: re.Match) -> str:
+        lang = (m.group(1) or "").strip()
+        code = html_lib.escape(m.group(2))
+        if lang:
+            rendered = f'<pre><code class="language-{html_lib.escape(lang)}">{code}</code></pre>'
+        else:
+            rendered = f"<pre>{code}</pre>"
+        placeholder = f"\x00CB{len(code_blocks)}\x00"
+        code_blocks.append(rendered)
+        return placeholder
+
+    text = re.sub(r"```(\w*)\n?(.*?)```", _replace_fenced, text, flags=re.DOTALL)
+
+    # Step 2 — pull out inline code.
+    inline_codes: list[str] = []
+
+    def _replace_inline(m: re.Match) -> str:
+        code = html_lib.escape(m.group(1))
+        placeholder = f"\x00IC{len(inline_codes)}\x00"
+        inline_codes.append(f"<code>{code}</code>")
+        return placeholder
+
+    text = re.sub(r"`([^`\n]+)`", _replace_inline, text)
+
+    # Step 3 — HTML-escape everything that remains (outside placeholders).
+    parts = re.split(r"(\x00(?:CB|IC)\d+\x00)", text)
+    escaped: list[str] = []
+    for part in parts:
+        if re.fullmatch(r"\x00(?:CB|IC)\d+\x00", part):
+            escaped.append(part)
+        else:
+            escaped.append(html_lib.escape(part))
+    text = "".join(escaped)
+
+    # Step 4 — apply inline formatting (order matters: bold before italic).
+    # Bold: **text** or __text__
+    text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
+    text = re.sub(r"__(.+?)__", r"<b>\1</b>", text, flags=re.DOTALL)
+
+    # Italic: *text* (single asterisk only — underscore italic skipped to
+    # avoid mangling file names and variable names like my_var).
+    text = re.sub(r"\*([^*\n]+)\*", r"<i>\1</i>", text)
+
+    # Strikethrough: ~~text~~
+    text = re.sub(r"~~(.+?)~~", r"<s>\1</s>", text, flags=re.DOTALL)
+
+    # Headers → bold line
+    text = re.sub(r"^#{1,6}\s+(.+)$", r"<b>\1</b>", text, flags=re.MULTILINE)
+
+    # Step 5 — restore placeholders.
+    for i, block in enumerate(code_blocks):
+        text = text.replace(f"\x00CB{i}\x00", block)
+    for i, block in enumerate(inline_codes):
+        text = text.replace(f"\x00IC{i}\x00", block)
+
+    return text
+
+
+async def _reply_html(message: Any, text: str) -> None:
+    """Send a reply with HTML formatting, falling back to plain text on error."""
+    try:
+        await message.reply_text(_md_to_html(text), parse_mode=ParseMode.HTML)
+    except Exception as html_err:
+        logger.warning(f"HTML send failed ({html_err}), retrying as plain text.")
+        await message.reply_text(text)
+
+
+async def _send_html(bot: Any, chat_id: int, text: str, **kwargs: Any) -> None:
+    """Send a new message with HTML formatting, falling back to plain text."""
+    try:
+        await bot.send_message(chat_id=chat_id, text=_md_to_html(text), parse_mode=ParseMode.HTML, **kwargs)
+    except Exception as html_err:
+        logger.warning(f"HTML send failed ({html_err}), retrying as plain text.")
+        await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# TelegramChannel
+# ---------------------------------------------------------------------------
 
 class TelegramChannel(BaseChannel):
     """Telegram Bot Channel implementation with single-owner verification and inline confirmation dialogs."""
@@ -93,12 +201,12 @@ class TelegramChannel(BaseChannel):
             return
 
         help_text = (
-            "🤖 *APOLLO Commands & Capabilities*\n\n"
+            "🤖 **APOLLO Commands & Capabilities**\n\n"
             "Just chat naturally to ask questions or trigger actions.\n"
             "• Permission policy strictly enforces `auto`, `logged`, and `confirm` tiers.\n"
             "• Destructive actions will present interactive approval buttons.\n"
         )
-        await update.message.reply_text(help_text, parse_mode="Markdown")
+        await _reply_html(update.message, help_text)
 
     async def _handle_incoming_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_user or not update.message or not update.message.text:
@@ -114,25 +222,35 @@ class TelegramChannel(BaseChannel):
         logger.info(f"Received message from owner ({sender_id}): '{user_text}'")
 
         if self.message_handler_callback:
-            # Send initial processing status or answer
-            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+            # Telegram's typing indicator expires after ~5s, so we keep
+            # re-sending it every 4s in a background task for the full duration.
+            chat_id = update.effective_chat.id
+
+            async def _keep_typing() -> None:
+                try:
+                    while True:
+                        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+                        await asyncio.sleep(4)
+                except asyncio.CancelledError:
+                    pass
+
+            typing_task = asyncio.create_task(_keep_typing())
             try:
                 response = await self.message_handler_callback(str(sender_id), user_text)
                 if response:
-                    await update.message.reply_text(response)
+                    await _reply_html(update.message, response)
             except Exception as e:
                 logger.error(f"Error handling Telegram message: {e}")
                 await update.message.reply_text(f"⚠️ Error executing request: {e}")
+            finally:
+                typing_task.cancel()
 
     async def send_message(self, recipient_id: str, text: str) -> None:
         if not self.app or not self.app.bot:
             logger.error("Cannot send Telegram message: Bot not initialized.")
             return
 
-        try:
-            await self.app.bot.send_message(chat_id=int(recipient_id), text=text)
-        except Exception as e:
-            logger.error(f"Failed to send Telegram message to {recipient_id}: {e}")
+        await _send_html(self.app.bot, int(recipient_id), text)
 
     async def request_confirmation(
         self,
@@ -150,12 +268,12 @@ class TelegramChannel(BaseChannel):
         future: asyncio.Future[bool] = loop.create_future()
         self.pending_confirmations[confirmation_id] = future
 
-        args_str = json.dumps(arguments, indent=2, ensure_ascii=False)
+        args_str = html_lib.escape(json.dumps(arguments, indent=2, ensure_ascii=False))
         message_text = (
-            f"⚠️ *APPROVAL REQUIRED*\n\n"
-            f"Tool: `{tool_name}`\n"
-            f"Tier: `confirm`\n"
-            f"Arguments:\n```json\n{args_str}\n```\n\n"
+            f"⚠️ <b>APPROVAL REQUIRED</b>\n\n"
+            f"Tool: <code>{html_lib.escape(tool_name)}</code>\n"
+            f"Tier: <code>confirm</code>\n"
+            f"Arguments:\n<pre>{args_str}</pre>\n\n"
             f"Do you authorize execution of this action?"
         )
 
@@ -171,7 +289,7 @@ class TelegramChannel(BaseChannel):
             await self.app.bot.send_message(
                 chat_id=int(recipient_id),
                 text=message_text,
-                parse_mode="Markdown",
+                parse_mode=ParseMode.HTML,
                 reply_markup=reply_markup,
             )
         except Exception as e:
@@ -180,7 +298,7 @@ class TelegramChannel(BaseChannel):
             return False
 
         try:
-            # Wait for user approval click or timeout (e.g. 5 minutes)
+            # Wait for user approval click or timeout (5 minutes)
             approved = await asyncio.wait_for(future, timeout=300.0)
             return approved
         except asyncio.TimeoutError:
@@ -219,9 +337,10 @@ class TelegramChannel(BaseChannel):
 
                 try:
                     orig_text = query.message.text if query.message else ""
+                    escaped_orig = html_lib.escape(orig_text)
                     await query.edit_message_text(
-                        text=f"{orig_text}\n\n*STATUS: {status_str}*",
-                        parse_mode="Markdown",
+                        text=f"{escaped_orig}\n\n<b>STATUS: {status_str}</b>",
+                        parse_mode=ParseMode.HTML,
                     )
                 except Exception as e:
                     logger.warning(f"Could not update confirmation message UI: {e}")
