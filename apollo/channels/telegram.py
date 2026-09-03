@@ -30,24 +30,23 @@ def _md_to_html(text: str) -> str:
     Convert a standard Markdown string to Telegram HTML (parse_mode=HTML).
 
     Handles:
-      - Fenced code blocks  ```lang\\ncode```  →  <pre><code class="...">
+      - Fenced code blocks  ```lang\\ncode```  →  <pre><code class="language-lang">
       - Inline code         `code`             →  <code>
+      - Blockquotes         > quote            →  <blockquote>
+      - Spoilers            ||spoiler||        →  <tg-spoiler>
       - Bold                **text** / __text__ →  <b>
       - Italic              *text*             →  <i>
       - Strikethrough       ~~text~~           →  <s>
-      - ATX headers         # / ## / ###       →  <b> (Telegram has no headings)
+      - ATX headers         # / ## / ###       →  <b>
       - Remaining text has HTML-unsafe chars escaped (<, >, &)
-
-    Tables are left as-is (Telegram doesn't support them; the text is still
-    readable as plain ASCII art).
     """
 
     # Step 1 — pull out fenced code blocks so their content isn't touched.
     code_blocks: list[str] = []
 
     def _replace_fenced(m: re.Match) -> str:
-        lang = (m.group(1) or "").strip()
-        code = html_lib.escape(m.group(2))
+        lang = (m.group(1) or "").strip().lower()
+        code = html_lib.escape(m.group(2).strip("\r\n"))
         if lang:
             rendered = f'<pre><code class="language-{html_lib.escape(lang)}">{code}</code></pre>'
         else:
@@ -56,7 +55,7 @@ def _md_to_html(text: str) -> str:
         code_blocks.append(rendered)
         return placeholder
 
-    text = re.sub(r"```(\w*)\n?(.*?)```", _replace_fenced, text, flags=re.DOTALL)
+    text = re.sub(r"```([a-zA-Z0-9_\+\#-]*)[^\n\r]*\r?\n?(.*?)\r?```", _replace_fenced, text, flags=re.DOTALL)
 
     # Step 2 — pull out inline code.
     inline_codes: list[str] = []
@@ -79,13 +78,23 @@ def _md_to_html(text: str) -> str:
             escaped.append(html_lib.escape(part))
     text = "".join(escaped)
 
-    # Step 4 — apply inline formatting (order matters: bold before italic).
+    # Step 4 — apply block and inline formatting.
+    # Blockquotes: consecutive lines starting with >
+    def _replace_blockquote(m: re.Match) -> str:
+        block_content = m.group(0)
+        cleaned_lines = [re.sub(r"^>\s?", "", line) for line in block_content.splitlines()]
+        return f"<blockquote>{chr(10).join(cleaned_lines)}</blockquote>"
+
+    text = re.sub(r"(?:^>[^\n]*(?:\n|$))+", _replace_blockquote, text, flags=re.MULTILINE)
+
+    # Spoilers: ||spoiler||
+    text = re.sub(r"\|\|(.+?)\|\|", r"<tg-spoiler>\1</tg-spoiler>", text, flags=re.DOTALL)
+
     # Bold: **text** or __text__
     text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
     text = re.sub(r"__(.+?)__", r"<b>\1</b>", text, flags=re.DOTALL)
 
-    # Italic: *text* (single asterisk only — underscore italic skipped to
-    # avoid mangling file names and variable names like my_var).
+    # Italic: *text* (single asterisk only)
     text = re.sub(r"\*([^*\n]+)\*", r"<i>\1</i>", text)
 
     # Strikethrough: ~~text~~
