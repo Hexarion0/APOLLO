@@ -1,6 +1,7 @@
+import asyncio
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 from openai import AsyncOpenAI
 
 from apollo.providers.base import BaseLLMProvider, ChatMessage, LLMResponse, ToolCall
@@ -42,6 +43,7 @@ class NvidiaNIMProvider(BaseLLMProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = 1024,
+        on_token: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> LLMResponse:
         formatted_messages = [msg.to_dict() for msg in messages]
 
@@ -60,13 +62,108 @@ class NvidiaNIMProvider(BaseLLMProvider):
                 kwargs["tools"] = tools
                 kwargs["tool_choice"] = "auto"
 
-            logger.info(f"Sending LLM request using model '{model_name}'...")
+            logger.info(f"Sending LLM request using model '{model_name}' (streaming={bool(on_token)})...")
             try:
-                response = None
                 for retry_attempt in range(2):
                     try:
-                        response = await self.client.chat.completions.create(**kwargs, timeout=90.0)
-                        break
+                        if on_token is not None:
+                            stream = await self.client.chat.completions.create(
+                                **kwargs,
+                                stream=True,
+                                timeout=90.0,
+                            )
+                            accumulated_content: List[str] = []
+                            tool_call_chunks: Dict[int, Dict[str, str]] = {}
+                            finish_reason = None
+
+                            async for chunk in stream:
+                                if not chunk.choices:
+                                    continue
+                                choice = chunk.choices[0]
+                                if choice.finish_reason:
+                                    finish_reason = choice.finish_reason
+                                delta = choice.delta
+                                if delta.content:
+                                    accumulated_content.append(delta.content)
+                                    try:
+                                        await on_token(delta.content)
+                                    except Exception as token_err:
+                                        logger.debug(f"on_token handler exception: {token_err}")
+
+                                if delta.tool_calls:
+                                    for tc_chunk in delta.tool_calls:
+                                        idx = tc_chunk.index
+                                        if idx not in tool_call_chunks:
+                                            tool_call_chunks[idx] = {
+                                                "id": tc_chunk.id or "",
+                                                "name": (tc_chunk.function.name if tc_chunk.function else "") or "",
+                                                "arguments": (tc_chunk.function.arguments if tc_chunk.function else "") or "",
+                                            }
+                                        else:
+                                            if tc_chunk.id:
+                                                tool_call_chunks[idx]["id"] += tc_chunk.id
+                                            if tc_chunk.function and tc_chunk.function.name:
+                                                tool_call_chunks[idx]["name"] += tc_chunk.function.name
+                                            if tc_chunk.function and tc_chunk.function.arguments:
+                                                tool_call_chunks[idx]["arguments"] += tc_chunk.function.arguments
+
+                            parsed_tool_calls: List[ToolCall] = []
+                            for idx in sorted(tool_call_chunks.keys()):
+                                tc_data = tool_call_chunks[idx]
+                                raw_args = tc_data["arguments"]
+                                args_dict = {}
+                                if raw_args:
+                                    try:
+                                        args_dict = json.loads(raw_args)
+                                    except json.JSONDecodeError:
+                                        args_dict = {"raw": raw_args}
+                                parsed_tool_calls.append(
+                                    ToolCall(
+                                        id=tc_data["id"] or f"tc_{idx}",
+                                        name=tc_data["name"],
+                                        arguments=args_dict,
+                                    )
+                                )
+
+                            full_content = "".join(accumulated_content) if accumulated_content else None
+                            return LLMResponse(
+                                content=full_content,
+                                tool_calls=parsed_tool_calls,
+                                finish_reason=finish_reason,
+                                model_used=model_name,
+                                was_fallback=(model_name != self.model),
+                            )
+                        else:
+                            response = await self.client.chat.completions.create(**kwargs, timeout=90.0)
+                            choice = response.choices[0]
+                            message = choice.message
+
+                            parsed_tool_calls = []
+                            if message.tool_calls:
+                                for tc in message.tool_calls:
+                                    arguments_dict = {}
+                                    if tc.function.arguments:
+                                        try:
+                                            arguments_dict = json.loads(tc.function.arguments)
+                                        except json.JSONDecodeError:
+                                            arguments_dict = {"raw": tc.function.arguments}
+                                    parsed_tool_calls.append(
+                                        ToolCall(
+                                            id=tc.id,
+                                            name=tc.function.name,
+                                            arguments=arguments_dict,
+                                        )
+                                    )
+
+                            return LLMResponse(
+                                content=message.content,
+                                tool_calls=parsed_tool_calls,
+                                finish_reason=choice.finish_reason,
+                                raw_response=response,
+                                model_used=model_name,
+                                was_fallback=(model_name != self.model),
+                            )
+
                     except Exception as err:
                         err_str = str(err).lower()
                         if ("503" in err_str or "resourceexhausted" in err_str or "429" in err_str) and retry_attempt == 0:
@@ -74,39 +171,6 @@ class NvidiaNIMProvider(BaseLLMProvider):
                             await asyncio.sleep(0.5)
                         else:
                             raise err
-
-                if response is None:
-                    raise RuntimeError(f"Failed to get response from model '{model_name}'.")
-
-                choice = response.choices[0]
-                message = choice.message
-
-                parsed_tool_calls: List[ToolCall] = []
-                if message.tool_calls:
-                    for tc in message.tool_calls:
-                        arguments_dict = {}
-                        if tc.function.arguments:
-                            try:
-                                arguments_dict = json.loads(tc.function.arguments)
-                            except json.JSONDecodeError:
-                                logger.warning(f"Failed to parse tool call arguments as JSON: {tc.function.arguments}")
-                                arguments_dict = {"raw": tc.function.arguments}
-                        parsed_tool_calls.append(
-                            ToolCall(
-                                id=tc.id,
-                                name=tc.function.name,
-                                arguments=arguments_dict,
-                            )
-                        )
-
-                return LLMResponse(
-                    content=message.content,
-                    tool_calls=parsed_tool_calls,
-                    finish_reason=choice.finish_reason,
-                    raw_response=response,
-                    model_used=model_name,
-                    was_fallback=(model_name != self.model),
-                )
 
             except Exception as e:
                 logger.warning(f"Model '{model_name}' failed or timed out: {e}. Trying fallback models if available...")

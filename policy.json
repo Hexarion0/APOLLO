@@ -17,9 +17,13 @@
     "store_memory": "logged",
     "write_file": "logged",
     "execute_command": "logged",
+    "list_directory": "auto",
     "schedule_task": "confirm",
+    "list_tasks": "auto",
+    "cancel_task": "confirm",
     "web_search": "logged",
     "fetch_url": "logged",
+    "download_file": "logged",
     "get_weather": "auto"
   }
 }

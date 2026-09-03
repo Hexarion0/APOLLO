@@ -48,6 +48,8 @@ class LLMResponse:
     model_used: Optional[str] = None
     was_fallback: bool = False
 
+from typing import Any, Awaitable, Callable, Dict, List, Optional
+
 class BaseLLMProvider(ABC):
     """Abstract interface for LLM providers (NVIDIA NIM, Anthropic, OpenAI, Ollama, etc.)."""
 
@@ -58,6 +60,7 @@ class BaseLLMProvider(ABC):
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
+        on_token: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> LLMResponse:
         """Generate a response from the LLM provider given conversation history and tools."""
         pass

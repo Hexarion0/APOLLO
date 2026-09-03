@@ -304,3 +304,56 @@ class GetWeatherTool(BaseTool):
             "wind_direction_deg": current.get("wind_direction_10m"),
             "precipitation": f"{current.get('precipitation', 0)} mm",
         }
+
+
+# ---------------------------------------------------------------------------
+# DownloadFileTool
+# ---------------------------------------------------------------------------
+
+class DownloadFileTool(BaseTool):
+    """Download a file or binary asset from a URL and save it to a local destination file path."""
+
+    name = "download_file"
+    description = (
+        "Download a file, archive, image, or document from a URL and save it directly to a destination path. "
+        "(Requires logged tier)."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "url": {
+                "type": "string",
+                "description": "Direct URL of the file to download",
+            },
+            "destination_path": {
+                "type": "string",
+                "description": "Local destination file path to save the downloaded content",
+            },
+        },
+        "required": ["url", "destination_path"],
+    }
+
+    async def execute(self, url: str, destination_path: str, **kwargs: Any) -> Dict[str, Any]:
+        if not url.startswith(("http://", "https://")):
+            raise ValueError(f"Invalid URL scheme: {url!r}")
+
+        dest = Path(destination_path).expanduser().resolve()
+        dest.parent.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"DownloadFileTool: downloading '{url}' to '{dest}'")
+
+        bytes_written = 0
+        async with aiohttp.ClientSession(timeout=_DEFAULT_TIMEOUT, headers=_DEFAULT_HEADERS) as session:
+            async with session.get(url) as resp:
+                resp.raise_for_status()
+                with open(dest, "wb") as f:
+                    async for chunk in resp.content.iter_chunked(65536):
+                        f.write(chunk)
+                        bytes_written += len(chunk)
+
+        return {
+            "status": "success",
+            "url": url,
+            "destination_path": str(dest),
+            "bytes_downloaded": bytes_written,
+        }

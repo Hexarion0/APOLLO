@@ -32,3 +32,12 @@ async def test_fetch_url_invalid_scheme():
     tool = FetchURLTool()
     with pytest.raises(ValueError, match="Invalid URL scheme"):
         await tool.execute(url="ftp://invalid.com")
+
+def test_download_file_schema():
+    from apollo.tools.internet import DownloadFileTool
+    tool = DownloadFileTool()
+    schema = tool.to_openai_schema()
+    assert schema["type"] == "function"
+    assert schema["function"]["name"] == "download_file"
+    assert "url" in schema["function"]["parameters"]["required"]
+    assert "destination_path" in schema["function"]["parameters"]["required"]

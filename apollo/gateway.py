@@ -15,18 +15,22 @@ from apollo.providers.base import BaseLLMProvider, ChatMessage, ToolCall
 from apollo.providers.nvidia import NvidiaNIMProvider
 from apollo.scheduler.cron import BackgroundScheduler
 from apollo.tools.builtins import (
+    CancelTaskTool,
     ExecuteCommandTool,
     GetCurrentTimeTool,
     GetSystemInfoTool,
     GitDiffTool,
     GitStatusTool,
     ImportMemoryTool,
+    ListDirectoryTool,
+    ListTasksTool,
     ReadFileTool,
     RecallMemoryTool,
+    ScheduleTaskTool,
     StoreMemoryTool,
     WriteFileTool,
 )
-from apollo.tools.internet import FetchURLTool, GetWeatherTool, WebSearchTool
+from apollo.tools.internet import DownloadFileTool, FetchURLTool, GetWeatherTool, WebSearchTool
 from apollo.tools.registry import ToolRegistry
 
 from apollo.persona import DEFAULT_PERSONA_PROMPT, get_proactive_prompt_for_time
@@ -62,12 +66,12 @@ class ApolloGateway:
 
         self.channel = channel
 
+        # Scheduler
+        self.scheduler = BackgroundScheduler(task_callback=self._handle_scheduled_task)
+
         # Tool Registry
         self.tools = ToolRegistry()
         self._register_default_tools()
-
-        # Scheduler
-        self.scheduler = BackgroundScheduler(task_callback=self._handle_scheduled_task)
 
     def get_system_prompt(self) -> str:
         """Load personality prompt from persona file if available."""
@@ -84,6 +88,7 @@ class ApolloGateway:
         """Register built-in system tools."""
         self.tools.register(GetSystemInfoTool())
         self.tools.register(GetCurrentTimeTool())
+        self.tools.register(ListDirectoryTool())
         self.tools.register(ReadFileTool())
         self.tools.register(WriteFileTool())
         self.tools.register(ExecuteCommandTool())
@@ -92,9 +97,14 @@ class ApolloGateway:
         self.tools.register(StoreMemoryTool(memory_store=self.memory_store))
         self.tools.register(RecallMemoryTool(memory_store=self.memory_store))
         self.tools.register(ImportMemoryTool(memory_store=self.memory_store))
+        # Scheduler tools
+        self.tools.register(ScheduleTaskTool(scheduler=self.scheduler))
+        self.tools.register(ListTasksTool(scheduler=self.scheduler))
+        self.tools.register(CancelTaskTool(scheduler=self.scheduler))
         # Internet tools
         self.tools.register(WebSearchTool())
         self.tools.register(FetchURLTool())
+        self.tools.register(DownloadFileTool())
         self.tools.register(GetWeatherTool())
 
     async def start(self) -> None:
@@ -161,7 +171,13 @@ class ApolloGateway:
                 sanitized.append(ChatMessage(role=role, content=content))
         return sanitized
 
-    async def process_message(self, sender_id: str, user_message: str, max_turns: Optional[int] = None) -> str:
+    async def process_message(
+        self,
+        sender_id: str,
+        user_message: str,
+        max_turns: Optional[int] = None,
+        on_token: Optional[Callable[[str], Awaitable[None]]] = None,
+    ) -> str:
         """Process an incoming text message from the owner through the LLM tool execution loop."""
         if max_turns is None:
             max_turns = self.config.gateway.max_turns
@@ -183,7 +199,20 @@ class ApolloGateway:
 
         for turn in range(max_turns):
             logger.debug(f"LLM Loop Turn {turn + 1}/{max_turns}")
-            response = await self.provider.generate_response(messages=messages, tools=tool_schemas)
+            try:
+                response = await self.provider.generate_response(
+                    messages=messages,
+                    tools=tool_schemas,
+                    on_token=on_token,
+                )
+            except TypeError as te:
+                if "on_token" in str(te):
+                    response = await self.provider.generate_response(
+                        messages=messages,
+                        tools=tool_schemas,
+                    )
+                else:
+                    raise te
 
             if not response.tool_calls:
                 final_content = response.content or "No response generated."

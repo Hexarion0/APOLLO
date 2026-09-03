@@ -296,3 +296,162 @@ class ImportMemoryTool(BaseTool):
         from apollo.memory.importer import import_openclaw_memory
         path = Path(file_path).expanduser().resolve()
         return import_openclaw_memory(path, self.memory_store)
+
+class ListDirectoryTool(BaseTool):
+    name = "list_directory"
+    description = "List files and subdirectories in a directory with file sizes and directory indicators."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "dir_path": {
+                "type": "string",
+                "description": "Path to directory (defaults to current directory '.')",
+                "default": ".",
+            },
+            "max_items": {
+                "type": "integer",
+                "description": "Maximum number of directory items to return",
+                "default": 100,
+            },
+        },
+        "required": [],
+    }
+
+    async def execute(self, dir_path: str = ".", max_items: int = 100, **kwargs: Any) -> Dict[str, Any]:
+        path = Path(dir_path).expanduser().resolve()
+        if not path.exists():
+            raise FileNotFoundError(f"Directory not found: {dir_path}")
+        if not path.is_dir():
+            raise ValueError(f"Path is not a directory: {dir_path}")
+
+        items = []
+        for entry in sorted(path.iterdir()):
+            if len(items) >= max_items:
+                break
+            try:
+                stat = entry.stat()
+                items.append({
+                    "name": entry.name,
+                    "is_dir": entry.is_dir(),
+                    "size_bytes": stat.st_size if entry.is_file() else None,
+                })
+            except Exception:
+                items.append({"name": entry.name, "is_dir": entry.is_dir(), "size_bytes": None})
+
+        return {
+            "directory": str(path),
+            "item_count": len(items),
+            "items": items,
+        }
+
+class ScheduleTaskTool(BaseTool):
+    name = "schedule_task"
+    description = "Schedule an autonomous recurring or delayed background task. (Requires confirmation tier)."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Human-readable label for the scheduled task",
+            },
+            "prompt": {
+                "type": "string",
+                "description": "Prompt instructions for what APOLLO should execute when the task triggers",
+            },
+            "interval_seconds": {
+                "type": "integer",
+                "description": "Interval frequency in seconds (e.g. 3600 for every hour, 86400 for daily)",
+            },
+            "cron_expr": {
+                "type": "string",
+                "description": "Standard 5-part cron expression (e.g. '0 9 * * *' for 9 AM daily) — alternative to interval_seconds",
+            },
+            "task_id": {
+                "type": "string",
+                "description": "Optional unique ID for the task (auto-generated if omitted)",
+            },
+        },
+        "required": ["name", "prompt"],
+    }
+
+    def __init__(self, scheduler: Any):
+        self.scheduler = scheduler
+
+    async def execute(
+        self,
+        name: str,
+        prompt: str,
+        interval_seconds: Optional[int] = None,
+        cron_expr: Optional[str] = None,
+        task_id: Optional[str] = None,
+        **kwargs: Any,
+    ) -> Dict[str, Any]:
+        import uuid
+        tid = task_id or f"task_{uuid.uuid4().hex[:8]}"
+        task = self.scheduler.add_task(
+            task_id=tid,
+            name=name,
+            prompt=prompt,
+            cron_expr=cron_expr,
+            interval_seconds=interval_seconds,
+        )
+        return {
+            "status": "scheduled",
+            "task_id": task.task_id,
+            "name": task.name,
+            "prompt": task.prompt,
+            "interval_seconds": task.interval_seconds,
+            "cron_expr": task.cron_expr,
+        }
+
+class ListTasksTool(BaseTool):
+    name = "list_tasks"
+    description = "List all active background scheduled autonomous tasks."
+    parameters = {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    }
+
+    def __init__(self, scheduler: Any):
+        self.scheduler = scheduler
+
+    async def execute(self, **kwargs: Any) -> Dict[str, Any]:
+        tasks = self.scheduler.list_tasks()
+        return {
+            "count": len(tasks),
+            "tasks": [
+                {
+                    "task_id": t.task_id,
+                    "name": t.name,
+                    "prompt": t.prompt,
+                    "cron_expr": t.cron_expr,
+                    "interval_seconds": t.interval_seconds,
+                    "enabled": t.enabled,
+                }
+                for t in tasks
+            ],
+        }
+
+class CancelTaskTool(BaseTool):
+    name = "cancel_task"
+    description = "Cancel or remove an active background scheduled task by its task_id. (Requires confirmation tier)."
+    parameters = {
+        "type": "object",
+        "properties": {
+            "task_id": {
+                "type": "string",
+                "description": "ID of the task to cancel",
+            },
+        },
+        "required": ["task_id"],
+    }
+
+    def __init__(self, scheduler: Any):
+        self.scheduler = scheduler
+
+    async def execute(self, task_id: str, **kwargs: Any) -> Dict[str, Any]:
+        removed = self.scheduler.remove_task(task_id)
+        if not removed:
+            return {"status": "not_found", "task_id": task_id}
+        return {"status": "cancelled", "task_id": task_id}

@@ -112,22 +112,78 @@ def _md_to_html(text: str) -> str:
     return text
 
 
+def _chunk_text(text: str, max_chunk_size: int = 3500) -> list[str]:
+    """
+    Split text into chunks that fit within Telegram limits (~3500 chars).
+    Maintains balanced code blocks across chunk boundaries.
+    """
+    if len(text) <= max_chunk_size:
+        return [text]
+
+    chunks: list[str] = []
+    current: list[str] = []
+    current_len = 0
+    in_code_block = False
+    code_lang = ""
+
+    for line in text.splitlines(keepends=True):
+        line_len = len(line)
+        if current_len + line_len > max_chunk_size and current:
+            if in_code_block:
+                current.append("```\n")
+            chunks.append("".join(current))
+            current = []
+            current_len = 0
+            if in_code_block:
+                current.append(f"```{code_lang}\n")
+                current_len += len(current[-1])
+
+        stripped = line.strip()
+        if stripped.startswith("```"):
+            if in_code_block:
+                in_code_block = False
+                code_lang = ""
+            else:
+                in_code_block = True
+                code_lang = stripped[3:].strip()
+
+        current.append(line)
+        current_len += line_len
+
+    if current:
+        chunks.append("".join(current))
+
+    return chunks
+
+
 async def _reply_html(message: Any, text: str) -> None:
-    """Send a reply with HTML formatting, falling back to plain text on error."""
-    try:
-        await message.reply_text(_md_to_html(text), parse_mode=ParseMode.HTML)
-    except Exception as html_err:
-        logger.warning(f"HTML send failed ({html_err}), retrying as plain text.")
-        await message.reply_text(text)
+    """Send a reply with HTML formatting, auto-chunking long messages."""
+    chunks = _chunk_text(text)
+    for idx, chunk in enumerate(chunks):
+        html_chunk = _md_to_html(chunk)
+        try:
+            if idx == 0:
+                await message.reply_text(html_chunk, parse_mode=ParseMode.HTML)
+            else:
+                await message.chat.send_message(html_chunk, parse_mode=ParseMode.HTML)
+        except Exception as html_err:
+            logger.warning(f"HTML send failed ({html_err}), retrying chunk as plain text.")
+            if idx == 0:
+                await message.reply_text(chunk)
+            else:
+                await message.chat.send_message(chunk)
 
 
 async def _send_html(bot: Any, chat_id: int, text: str, **kwargs: Any) -> None:
-    """Send a new message with HTML formatting, falling back to plain text."""
-    try:
-        await bot.send_message(chat_id=chat_id, text=_md_to_html(text), parse_mode=ParseMode.HTML, **kwargs)
-    except Exception as html_err:
-        logger.warning(f"HTML send failed ({html_err}), retrying as plain text.")
-        await bot.send_message(chat_id=chat_id, text=text, **kwargs)
+    """Send a new message with HTML formatting, auto-chunking long messages."""
+    chunks = _chunk_text(text)
+    for chunk in chunks:
+        html_chunk = _md_to_html(chunk)
+        try:
+            await bot.send_message(chat_id=chat_id, text=html_chunk, parse_mode=ParseMode.HTML, **kwargs)
+        except Exception as html_err:
+            logger.warning(f"HTML send failed ({html_err}), retrying chunk as plain text.")
+            await bot.send_message(chat_id=chat_id, text=chunk, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -231,8 +287,6 @@ class TelegramChannel(BaseChannel):
         logger.info(f"Received message from owner ({sender_id}): '{user_text}'")
 
         if self.message_handler_callback:
-            # Telegram's typing indicator expires after ~5s, so we keep
-            # re-sending it every 4s in a background task for the full duration.
             chat_id = update.effective_chat.id
 
             async def _keep_typing() -> None:
@@ -244,13 +298,75 @@ class TelegramChannel(BaseChannel):
                     pass
 
             typing_task = asyncio.create_task(_keep_typing())
+            placeholder = None
             try:
-                response = await self.message_handler_callback(str(sender_id), user_text)
-                if response:
+                placeholder = await update.message.reply_text("<i>Thinking...</i>", parse_mode=ParseMode.HTML)
+            except Exception:
+                try:
+                    placeholder = await update.message.reply_text("Thinking...")
+                except Exception:
+                    pass
+
+            streamed_tokens: list[str] = []
+            last_edit_time = 0.0
+
+            async def _on_token(token: str) -> None:
+                nonlocal last_edit_time
+                if not placeholder:
+                    return
+                streamed_tokens.append(token)
+                now = asyncio.get_event_loop().time()
+                if now - last_edit_time >= 1.2:
+                    current_text = "".join(streamed_tokens).strip()
+                    if current_text:
+                        last_edit_time = now
+                        first_chunk = _chunk_text(current_text)[0]
+                        try:
+                            await placeholder.edit_text(_md_to_html(first_chunk) + " ▌", parse_mode=ParseMode.HTML)
+                        except Exception:
+                            pass
+
+            try:
+                # Call message handler with token streaming callback if supported
+                import inspect
+                sig = inspect.signature(self.message_handler_callback)
+                if "on_token" in sig.parameters:
+                    response = await self.message_handler_callback(str(sender_id), user_text, on_token=_on_token)
+                else:
+                    response = await self.message_handler_callback(str(sender_id), user_text)
+
+                if response and placeholder:
+                    chunks = _chunk_text(response)
+                    if chunks:
+                        # Finalize first chunk into the placeholder
+                        try:
+                            await placeholder.edit_text(_md_to_html(chunks[0]), parse_mode=ParseMode.HTML)
+                        except Exception:
+                            try:
+                                await placeholder.edit_text(chunks[0])
+                            except Exception:
+                                pass
+
+                        # Send any subsequent chunks as follow-up messages
+                        for follow_up in chunks[1:]:
+                            html_chunk = _md_to_html(follow_up)
+                            try:
+                                await update.message.chat.send_message(html_chunk, parse_mode=ParseMode.HTML)
+                            except Exception:
+                                await update.message.chat.send_message(follow_up)
+                elif response:
                     await _reply_html(update.message, response)
+
             except Exception as e:
                 logger.error(f"Error handling Telegram message: {e}")
-                await update.message.reply_text(f"⚠️ Error executing request: {e}")
+                error_text = f"⚠️ Error executing request: {e}"
+                if placeholder:
+                    try:
+                        await placeholder.edit_text(error_text)
+                    except Exception:
+                        await update.message.reply_text(error_text)
+                else:
+                    await update.message.reply_text(error_text)
             finally:
                 typing_task.cancel()
 

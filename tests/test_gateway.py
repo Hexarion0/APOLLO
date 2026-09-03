@@ -19,6 +19,8 @@ class MockLLMProvider(BaseLLMProvider):
         tools: Optional[List[Dict[str, Any]]] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
+        on_token: Optional[Any] = None,
+        **kwargs: Any,
     ) -> LLMResponse:
         if self.call_count < len(self.mock_responses):
             resp = self.mock_responses[self.call_count]
