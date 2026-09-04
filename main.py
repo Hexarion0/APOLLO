@@ -30,6 +30,11 @@ async def main() -> None:
 
     config = Config.load_from_env()
 
+    # Apply logging level from configuration
+    log_level = getattr(logging, config.logging.level.upper(), logging.INFO)
+    logging.getLogger().setLevel(log_level)
+    logger.info(f"Log level set to {config.logging.level.upper()}.")
+
     if not config.telegram.owner_id:
         logger.warning("TELEGRAM_OWNER_ID is not configured in .env! Single-owner validation will reject requests until set.")
 

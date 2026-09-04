@@ -1,7 +1,7 @@
 {
   "//_comment": "APOLLO Gateway Master Configuration. Sensitive secrets (NVIDIA_API_KEY, TELEGRAM_BOT_TOKEN) are loaded from .env for security.",
   "provider": {
-    "//_comment": "NVIDIA NIM / OpenAI-compatible provider settings. API Key is read from .env (NVIDIA_API_KEY)",
+    "//_comment": "NVIDIA NIM / LLM settings. API Key is read from .env (NVIDIA_API_KEY)",
     "api_key": "",
     "base_url": "https://integrate.api.nvidia.com/v1",
     "model": "nvidia/nemotron-3-ultra-550b-a55b",
@@ -10,22 +10,32 @@
       "meta/llama-3.2-11b-vision-instruct"
     ],
     "temperature": 0.7,
-    "max_tokens": 2048
+    "top_p": 1.0,
+    "max_tokens": 2048,
+    "timeout_seconds": 90.0
   },
   "telegram": {
-    "//_comment": "Telegram Bot settings. Bot Token is read from .env (TELEGRAM_BOT_TOKEN)",
+    "//_comment": "Telegram Channel & Owner Authorization. Bot Token is read from .env (TELEGRAM_BOT_TOKEN)",
     "bot_token": "",
-    "owner_id": 6579740425
+    "owner_id": 6579740425,
+    "typing_indicator": true
   },
   "gateway": {
-    "//_comment": "Core Gateway Execution Controls",
+    "//_comment": "Core Gateway Execution Controls & Boot notifications",
     "max_turns": 12,
-    "persona_file": "persona.txt"
+    "chat_history_limit": 10,
+    "persona_file": "persona.txt",
+    "startup_notification": true,
+    "startup_message": "🚀 **APOLLO Online**: System booted and services are operational."
   },
   "proactive": {
-    "//_comment": "Autonomous Spontaneous Persona Reach-outs",
+    "//_comment": "Autonomous Spontaneous Persona Reach-outs & Cron",
     "enabled": true,
     "interval_hours": 4
+  },
+  "logging": {
+    "//_comment": "Log output level: DEBUG, INFO, WARNING, ERROR",
+    "level": "INFO"
   },
   "paths": {
     "//_comment": "File Paths for Policy, Audit Log, Chat Log, and Memory Database",

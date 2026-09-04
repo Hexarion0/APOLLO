@@ -1,0 +1,22 @@
+[Unit]
+Description=APOLLO - Adaptive Personal Operator for Learning, Life & Optimization
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hexarion
+WorkingDirectory=/home/hexarion/APOLLO
+EnvironmentFile=-/home/hexarion/APOLLO/.env
+ExecStart=/home/hexarion/APOLLO/.venv/bin/python main.py
+Restart=always
+RestartSec=5
+KillMode=process
+TimeoutStopSec=15
+
+# Standard logging to journald
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

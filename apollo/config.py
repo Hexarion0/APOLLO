@@ -3,12 +3,16 @@ import os
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
 
 logger = logging.getLogger("apollo.config")
 
 DEFAULT_MODEL = "nvidia/nemotron-3-super-120b-a12b"
+
+@dataclass
+class LoggingConfig:
+    level: str = "INFO"
 
 @dataclass
 class ProviderConfig:
@@ -17,23 +21,36 @@ class ProviderConfig:
     model: str = "nvidia/nemotron-3-ultra-550b-a55b"
     fallback_models: List[str] = field(default_factory=lambda: ["nvidia/nemotron-3-super-120b-a12b", "meta/llama-3.2-11b-vision-instruct"])
     temperature: float = 0.7
+    top_p: float = 1.0
     max_tokens: int = 2048
+    timeout_seconds: float = 90.0
 
 @dataclass
 class TelegramConfig:
     bot_token: str = ""
     owner_id: int = 0
+    typing_indicator: bool = True
 
 @dataclass
 class GatewayConfig:
     max_turns: int = 12
     persona_file: Path = Path("persona.txt")
+    startup_notification: bool = True
+    startup_message: str = "🚀 **APOLLO Online**: System booted and services are operational."
+    chat_history_limit: int = 10
+
+@dataclass
+class ProactiveConfig:
+    enabled: bool = True
+    interval_hours: int = 4
 
 @dataclass
 class Config:
     provider: ProviderConfig = field(default_factory=ProviderConfig)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     gateway: GatewayConfig = field(default_factory=GatewayConfig)
+    proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
     policy_file: Path = Path("policy.json")
     audit_log_file: Path = Path("audit.log")
     chat_log_file: Path = Path("chat.log")
@@ -71,7 +88,12 @@ class Config:
         gateway_json = json_data.get("gateway", {})
         proactive_json = json_data.get("proactive", {})
         paths_json = json_data.get("paths", {})
+        logging_json = json_data.get("logging", {})
 
+        # Logging
+        log_level = os.getenv("LOG_LEVEL") or logging_json.get("level", "INFO").upper()
+
+        # Provider
         api_key = os.getenv("NVIDIA_API_KEY") or provider_json.get("api_key", "")
         base_url = os.getenv("NVIDIA_BASE_URL") or provider_json.get("base_url", "https://integrate.api.nvidia.com/v1")
         model = os.getenv("NVIDIA_MODEL") or provider_json.get("model", "nvidia/nemotron-3-ultra-550b-a55b")
@@ -81,9 +103,12 @@ class Config:
         else:
             fallback_models = provider_json.get("fallback_models", ["nvidia/nemotron-3-super-120b-a12b", "meta/llama-3.2-11b-vision-instruct"])
 
-        temperature = float(provider_json.get("temperature", 0.7))
-        max_tokens = int(provider_json.get("max_tokens", 2048))
+        temperature = float(os.getenv("NVIDIA_TEMPERATURE") or provider_json.get("temperature", 0.7))
+        top_p = float(os.getenv("NVIDIA_TOP_P") or provider_json.get("top_p", 1.0))
+        max_tokens = int(os.getenv("NVIDIA_MAX_TOKENS") or provider_json.get("max_tokens", 2048))
+        timeout_seconds = float(os.getenv("NVIDIA_TIMEOUT") or provider_json.get("timeout_seconds", 90.0))
 
+        # Telegram
         bot_token = os.getenv("TELEGRAM_BOT_TOKEN") or telegram_json.get("bot_token", "")
         owner_id_env = os.getenv("TELEGRAM_OWNER_ID")
         if owner_id_env:
@@ -94,9 +119,27 @@ class Config:
         else:
             owner_id = int(telegram_json.get("owner_id", 0))
 
-        max_turns = int(gateway_json.get("max_turns", 12))
-        persona_file = Path(os.getenv("PERSONA_FILE") or gateway_json.get("persona_file") or "persona.txt")
+        typing_env = os.getenv("TELEGRAM_TYPING_INDICATOR")
+        if typing_env:
+            typing_indicator = typing_env.lower() in ("true", "1", "yes")
+        else:
+            typing_indicator = bool(telegram_json.get("typing_indicator", True))
 
+        # Gateway
+        max_turns = int(os.getenv("GATEWAY_MAX_TURNS") or gateway_json.get("max_turns", 12))
+        persona_file = Path(os.getenv("PERSONA_FILE") or gateway_json.get("persona_file") or "persona.txt")
+        startup_notif_env = os.getenv("STARTUP_NOTIFICATION")
+        if startup_notif_env:
+            startup_notification = startup_notif_env.lower() in ("true", "1", "yes")
+        else:
+            startup_notification = bool(gateway_json.get("startup_notification", True))
+
+        startup_message = os.getenv("STARTUP_MESSAGE") or gateway_json.get(
+            "startup_message", "🚀 **APOLLO Online**: System booted and services are operational."
+        )
+        chat_history_limit = int(os.getenv("CHAT_HISTORY_LIMIT") or gateway_json.get("chat_history_limit", 10))
+
+        # Proactive
         proactive_env = os.getenv("PROACTIVE_ENABLED")
         if proactive_env:
             proactive_enabled = proactive_env.lower() in ("true", "1", "yes")
@@ -112,6 +155,7 @@ class Config:
         else:
             proactive_interval = int(proactive_json.get("interval_hours", 4))
 
+        # Paths
         policy_file = Path(os.getenv("POLICY_FILE") or paths_json.get("policy_file") or "policy.json")
         audit_log_file = Path(os.getenv("AUDIT_LOG_FILE") or paths_json.get("audit_log_file") or "audit.log")
         chat_log_file = Path(os.getenv("CHAT_LOG_FILE") or paths_json.get("chat_log_file") or "chat.log")
@@ -124,15 +168,28 @@ class Config:
                 model=model,
                 fallback_models=fallback_models,
                 temperature=temperature,
+                top_p=top_p,
                 max_tokens=max_tokens,
+                timeout_seconds=timeout_seconds,
             ),
             telegram=TelegramConfig(
                 bot_token=bot_token,
                 owner_id=owner_id,
+                typing_indicator=typing_indicator,
             ),
             gateway=GatewayConfig(
                 max_turns=max_turns,
                 persona_file=persona_file,
+                startup_notification=startup_notification,
+                startup_message=startup_message,
+                chat_history_limit=chat_history_limit,
+            ),
+            proactive=ProactiveConfig(
+                enabled=proactive_enabled,
+                interval_hours=proactive_interval,
+            ),
+            logging=LoggingConfig(
+                level=log_level,
             ),
             policy_file=policy_file,
             audit_log_file=audit_log_file,

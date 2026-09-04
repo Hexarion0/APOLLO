@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 from apollo.audit import AuditLogger
 from apollo.auth import SingleOwnerAuthGuard
@@ -125,6 +125,15 @@ class ApolloGateway:
 
         if self.channel:
             await self.channel.start()
+            if self.config.gateway.startup_notification and self.config.telegram.owner_id:
+                try:
+                    await self.channel.send_message(
+                        recipient_id=str(self.config.telegram.owner_id),
+                        text=self.config.gateway.startup_message,
+                    )
+                    logger.info("Sent startup notification to owner.")
+                except Exception as e:
+                    logger.warning(f"Failed to send startup notification: {e}")
         logger.info("APOLLO Gateway is online and ready.")
 
     async def stop(self) -> None:
@@ -189,7 +198,11 @@ class ApolloGateway:
         self.chat_logger.log_user(user_message, sender_id=sender_id)
 
         # Load recent context
-        history = self.memory_store.get_recent_chat_history(channel=channel_name, sender_id=sender_id, limit=10)
+        history = self.memory_store.get_recent_chat_history(
+            channel=channel_name,
+            sender_id=sender_id,
+            limit=self.config.gateway.chat_history_limit,
+        )
 
         system_prompt = self.get_system_prompt()
         messages: List[ChatMessage] = [ChatMessage(role="system", content=system_prompt)]

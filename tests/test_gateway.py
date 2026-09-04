@@ -34,10 +34,10 @@ class MockChannel(BaseChannel):
         self.sent_messages: List[str] = []
         self.confirmation_requests: List[Dict[str, Any]] = []
 
-    async def start() -> None:
+    async def start(self) -> None:
         pass
 
-    async def stop() -> None:
+    async def stop(self) -> None:
         pass
 
     async def send_message(self, recipient_id: str, text: str) -> None:
@@ -161,3 +161,28 @@ async def test_gateway_unauthorized_sender_raises(tmp_path: Path):
 
     with pytest.raises(PermissionError):
         await gateway.process_message(sender_id="99999", user_message="Attack")
+
+def test_gateway_and_config_signatures_valid():
+    import inspect
+    sig = inspect.signature(ApolloGateway.process_message)
+    assert "on_token" in sig.parameters
+    sig_cfg = inspect.signature(ProviderConfig)
+    assert "fallback_models" in sig_cfg.parameters
+
+@pytest.mark.asyncio
+async def test_gateway_startup_notification(tmp_path: Path):
+    config = Config(
+        telegram=TelegramConfig(bot_token="test_token", owner_id=12345),
+        policy_file=tmp_path / "policy.json",
+        audit_log_file=tmp_path / "audit.log",
+        database_path=tmp_path / "apollo.db",
+    )
+    config.gateway.startup_notification = True
+    channel = MockChannel()
+    gateway = ApolloGateway(config=config, channel=channel)
+
+    await gateway.start()
+    assert len(channel.sent_messages) == 1
+    assert "APOLLO Online" in channel.sent_messages[0]
+    await gateway.stop()
+
