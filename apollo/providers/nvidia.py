@@ -8,6 +8,15 @@ from apollo.providers.base import BaseLLMProvider, ChatMessage, LLMResponse, Too
 
 logger = logging.getLogger("apollo.providers.nvidia")
 
+def _has_visual_content(messages: List[Dict[str, Any]]) -> bool:
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for part in content:
+                if isinstance(part, dict) and (part.get("type") == "image_url" or "image_url" in part):
+                    return True
+    return False
+
 class NvidiaNIMProvider(BaseLLMProvider):
     """NVIDIA NIM API Provider implementation using OpenAI-compatible interface."""
 
@@ -17,11 +26,13 @@ class NvidiaNIMProvider(BaseLLMProvider):
         base_url: str = "https://integrate.api.nvidia.com/v1",
         model: str = "nvidia/nemotron-3-ultra-550b-a55b",
         fallback_models: Optional[List[str]] = None,
+        vision_model: str = "meta/llama-3.2-11b-vision-instruct",
     ):
         self.api_key = api_key
         self.base_url = base_url
         self.model = model
         self.fallback_models = fallback_models if fallback_models is not None else ["nvidia/nemotron-3-super-120b-a12b", "meta/llama-3.2-11b-vision-instruct"]
+        self.vision_model = vision_model
         self._client: Optional[AsyncOpenAI] = None
 
     @property
@@ -47,7 +58,17 @@ class NvidiaNIMProvider(BaseLLMProvider):
     ) -> LLMResponse:
         formatted_messages = [msg.to_dict() for msg in messages]
 
-        candidate_models = [self.model] + [m for m in self.fallback_models if m != self.model]
+        has_vision = _has_visual_content(formatted_messages)
+        if has_vision:
+            # Build list of vision-capable candidate models
+            candidate_models = [self.vision_model]
+            all_known = [self.model] + self.fallback_models
+            for m in all_known:
+                if m not in candidate_models and any(tag in m.lower() for tag in ("vision", "neva", "llava", "multimodal", "vl")):
+                    candidate_models.append(m)
+        else:
+            candidate_models = [self.model] + [m for m in self.fallback_models if m != self.model]
+
         last_exception = None
 
         for model_name in candidate_models:

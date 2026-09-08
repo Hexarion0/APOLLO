@@ -29,3 +29,9 @@ class BaseChannel(ABC):
     ) -> bool:
         """Request explicit owner approval for a confirmation-tier tool action."""
         pass
+
+    def cancel_active_task(self, recipient_id: str) -> bool:
+        """Cancel any active processing task for recipient_id if supported."""
+        return False
+
+

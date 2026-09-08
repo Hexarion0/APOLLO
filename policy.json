@@ -18,12 +18,13 @@
     "write_file": "logged",
     "execute_command": "logged",
     "list_directory": "auto",
-    "schedule_task": "confirm",
+    "schedule_task": "logged",
     "list_tasks": "auto",
     "cancel_task": "confirm",
     "web_search": "logged",
     "fetch_url": "logged",
     "download_file": "logged",
-    "get_weather": "auto"
+    "get_weather": "auto",
+    "analyze_image": "auto"
   }
 }

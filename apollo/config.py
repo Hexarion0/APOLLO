@@ -20,6 +20,7 @@ class ProviderConfig:
     base_url: str = "https://integrate.api.nvidia.com/v1"
     model: str = "nvidia/nemotron-3-ultra-550b-a55b"
     fallback_models: List[str] = field(default_factory=lambda: ["nvidia/nemotron-3-super-120b-a12b", "meta/llama-3.2-11b-vision-instruct"])
+    vision_model: str = "meta/llama-3.2-11b-vision-instruct"
     temperature: float = 0.7
     top_p: float = 1.0
     max_tokens: int = 2048
@@ -103,6 +104,7 @@ class Config:
         else:
             fallback_models = provider_json.get("fallback_models", ["nvidia/nemotron-3-super-120b-a12b", "meta/llama-3.2-11b-vision-instruct"])
 
+        vision_model = os.getenv("NVIDIA_VISION_MODEL") or provider_json.get("vision_model", "meta/llama-3.2-11b-vision-instruct")
         temperature = float(os.getenv("NVIDIA_TEMPERATURE") or provider_json.get("temperature", 0.7))
         top_p = float(os.getenv("NVIDIA_TOP_P") or provider_json.get("top_p", 1.0))
         max_tokens = int(os.getenv("NVIDIA_MAX_TOKENS") or provider_json.get("max_tokens", 2048))
@@ -167,6 +169,7 @@ class Config:
                 base_url=base_url,
                 model=model,
                 fallback_models=fallback_models,
+                vision_model=vision_model,
                 temperature=temperature,
                 top_p=top_p,
                 max_tokens=max_tokens,

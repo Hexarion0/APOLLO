@@ -31,6 +31,7 @@ from apollo.tools.builtins import (
     WriteFileTool,
 )
 from apollo.tools.internet import DownloadFileTool, FetchURLTool, GetWeatherTool, WebSearchTool
+from apollo.tools.vision import AnalyzeImageTool
 from apollo.tools.registry import ToolRegistry
 
 from apollo.persona import DEFAULT_PERSONA_PROMPT, get_proactive_prompt_for_time
@@ -62,6 +63,7 @@ class ApolloGateway:
                 base_url=config.provider.base_url,
                 model=config.provider.model,
                 fallback_models=config.provider.fallback_models,
+                vision_model=config.provider.vision_model,
             )
 
         self.channel = channel
@@ -106,6 +108,8 @@ class ApolloGateway:
         self.tools.register(FetchURLTool())
         self.tools.register(DownloadFileTool())
         self.tools.register(GetWeatherTool())
+        # Vision tool
+        self.tools.register(AnalyzeImageTool(provider=self.provider))
 
     async def start(self) -> None:
         """Start APOLLO Gateway engine, channel, and scheduler."""
@@ -174,28 +178,41 @@ class ApolloGateway:
             content = h.get("content")
             if not role or not content:
                 continue
-            if sanitized and sanitized[-1].role == role:
+            if (
+                sanitized
+                and sanitized[-1].role == role
+                and isinstance(sanitized[-1].content, str)
+                and isinstance(content, str)
+            ):
                 sanitized[-1].content = f"{sanitized[-1].content}\n{content}"
             else:
                 sanitized.append(ChatMessage(role=role, content=content))
         return sanitized
 
+    def cancel_task(self, sender_id: str) -> bool:
+        """Cancel an active response/task for sender_id if supported by the channel."""
+        if self.channel and hasattr(self.channel, "cancel_active_task"):
+            return self.channel.cancel_active_task(sender_id)
+        return False
+
     async def process_message(
         self,
         sender_id: str,
         user_message: str,
+        images: Optional[List[str]] = None,
         max_turns: Optional[int] = None,
         on_token: Optional[Callable[[str], Awaitable[None]]] = None,
     ) -> str:
-        """Process an incoming text message from the owner through the LLM tool execution loop."""
+        """Process an incoming text or multimodal message from the owner through the LLM tool execution loop."""
         if max_turns is None:
             max_turns = self.config.gateway.max_turns
 
         self.auth_guard.validate_or_raise(sender_id)
 
         channel_name = "telegram" if self.channel else "local"
-        self.memory_store.add_chat_message(channel=channel_name, sender_id=sender_id, role="user", content=user_message)
-        self.chat_logger.log_user(user_message, sender_id=sender_id)
+        log_content = f"[Image Attached]\n{user_message}" if images else user_message
+        self.memory_store.add_chat_message(channel=channel_name, sender_id=sender_id, role="user", content=log_content)
+        self.chat_logger.log_user(log_content, sender_id=sender_id)
 
         # Load recent context
         history = self.memory_store.get_recent_chat_history(
@@ -208,123 +225,137 @@ class ApolloGateway:
         messages: List[ChatMessage] = [ChatMessage(role="system", content=system_prompt)]
         messages.extend(self._sanitize_chat_history(history))
 
+        # If images are provided in the current turn, format the latest user message with multimodal parts
+        if images and messages and messages[-1].role == "user":
+            content_parts: List[Dict[str, Any]] = [{"type": "text", "text": user_message}]
+            for img_uri in images:
+                content_parts.append({"type": "image_url", "image_url": {"url": img_uri}})
+            messages[-1].content = content_parts
+
         tool_schemas = self.tools.get_openai_schemas()
 
-        for turn in range(max_turns):
-            logger.debug(f"LLM Loop Turn {turn + 1}/{max_turns}")
-            try:
-                response = await self.provider.generate_response(
-                    messages=messages,
-                    tools=tool_schemas,
-                    on_token=on_token,
-                )
-            except TypeError as te:
-                if "on_token" in str(te):
+        try:
+            for turn in range(max_turns):
+                logger.debug(f"LLM Loop Turn {turn + 1}/{max_turns}")
+                try:
                     response = await self.provider.generate_response(
                         messages=messages,
                         tools=tool_schemas,
+                        on_token=on_token,
                     )
-                else:
-                    raise te
-
-            if not response.tool_calls:
-                final_content = response.content or "No response generated."
-                if response.was_fallback and response.model_used:
-                    logger.info(f"Primary model unavailable. Response delivered via fallback model '{response.model_used}'.")
-                    final_content += f"\n\n_(ℹ️ Responded via fallback model: `{response.model_used}`)_"
-
-                messages.append(ChatMessage(role="assistant", content=final_content))
-                self.memory_store.add_chat_message(channel=channel_name, sender_id=sender_id, role="assistant", content=final_content)
-                self.chat_logger.log_assistant(final_content)
-                return final_content
-
-            # LLM requested tool calls
-            messages.append(ChatMessage(role="assistant", content=response.content, tool_calls=response.tool_calls))
-
-            for tc in response.tool_calls:
-                tool_name = tc.name
-                arguments = tc.arguments
-                tier = self.policy_engine.get_tier(tool_name)
-
-                logger.info(f"Tool call requested: {tool_name} (tier: {tier.value}) args={arguments}")
-                self.chat_logger.log_tool_call(tool_name, arguments)
-
-                # Evaluate Policy Tier
-                should_execute = False
-                action_status = "PENDING"
-                error_msg = None
-                result_data = None
-
-                if tier == PermissionTier.AUTO:
-                    should_execute = True
-                    action_status = "EXECUTED"
-                elif tier == PermissionTier.LOGGED:
-                    should_execute = True
-                    action_status = "EXECUTED"
-                elif tier == PermissionTier.CONFIRM:
-                    if self.channel:
-                        conf_id = str(uuid.uuid4())[:8]
-                        approved = await self.channel.request_confirmation(
-                            recipient_id=sender_id,
-                            confirmation_id=conf_id,
-                            tool_name=tool_name,
-                            arguments=arguments,
+                except TypeError as te:
+                    if "on_token" in str(te):
+                        response = await self.provider.generate_response(
+                            messages=messages,
+                            tools=tool_schemas,
                         )
-                        if approved:
-                            should_execute = True
-                            action_status = "CONFIRMED"
+                    else:
+                        raise te
+
+                if not response.tool_calls:
+                    final_content = response.content or "No response generated."
+                    if response.was_fallback and response.model_used:
+                        logger.info(f"Primary model unavailable. Response delivered via fallback model '{response.model_used}'.")
+                        final_content += f"\n\n_(ℹ️ Responded via fallback model: `{response.model_used}`)_"
+
+                    messages.append(ChatMessage(role="assistant", content=final_content))
+                    self.memory_store.add_chat_message(channel=channel_name, sender_id=sender_id, role="assistant", content=final_content)
+                    self.chat_logger.log_assistant(final_content)
+                    return final_content
+
+                # LLM requested tool calls
+                messages.append(ChatMessage(role="assistant", content=response.content, tool_calls=response.tool_calls))
+
+                for tc in response.tool_calls:
+                    tool_name = tc.name
+                    arguments = tc.arguments
+                    tier = self.policy_engine.get_tier(tool_name)
+
+                    logger.info(f"Tool call requested: {tool_name} (tier: {tier.value}) args={arguments}")
+                    self.chat_logger.log_tool_call(tool_name, arguments)
+
+                    # Evaluate Policy Tier
+                    should_execute = False
+                    action_status = "PENDING"
+                    error_msg = None
+                    result_data = None
+
+                    if tier == PermissionTier.AUTO:
+                        should_execute = True
+                        action_status = "EXECUTED"
+                    elif tier == PermissionTier.LOGGED:
+                        should_execute = True
+                        action_status = "EXECUTED"
+                    elif tier == PermissionTier.CONFIRM:
+                        if self.channel:
+                            conf_id = str(uuid.uuid4())[:8]
+                            approved = await self.channel.request_confirmation(
+                                recipient_id=sender_id,
+                                confirmation_id=conf_id,
+                                tool_name=tool_name,
+                                arguments=arguments,
+                            )
+                            if approved:
+                                should_execute = True
+                                action_status = "CONFIRMED"
+                            else:
+                                should_execute = False
+                                action_status = "DENIED"
+                                error_msg = "Tool execution rejected by owner approval dialog."
                         else:
+                            logger.warning(f"No interactive channel available to confirm tool '{tool_name}'. Rejecting execution.")
                             should_execute = False
                             action_status = "DENIED"
-                            error_msg = "Tool execution rejected by owner approval dialog."
-                    else:
-                        logger.warning(f"No interactive channel available to confirm tool '{tool_name}'. Rejecting execution.")
-                        should_execute = False
-                        action_status = "DENIED"
-                        error_msg = "No interactive channel available for confirmation."
+                            error_msg = "No interactive channel available for confirmation."
 
-                # Execute or Reject
-                if should_execute:
-                    try:
-                        result_data = await self.tools.execute_tool(tool_name, **arguments)
-                    except Exception as e:
-                        logger.error(f"Error executing tool '{tool_name}': {e}")
-                        result_data = {"error": str(e)}
-                        error_msg = str(e)
-                        action_status = "FAILED"
+                    # Execute or Reject
+                    if should_execute:
+                        try:
+                            result_data = await self.tools.execute_tool(tool_name, **arguments)
+                        except Exception as e:
+                            logger.error(f"Error executing tool '{tool_name}': {e}")
+                            result_data = {"error": str(e)}
+                            error_msg = str(e)
+                            action_status = "FAILED"
 
-                # Log to audit file if tier is logged or confirm
-                if tier in (PermissionTier.LOGGED, PermissionTier.CONFIRM):
-                    self.audit_logger.log_action(
+                    # Log to audit file if tier is logged or confirm
+                    if tier in (PermissionTier.LOGGED, PermissionTier.CONFIRM):
+                        self.audit_logger.log_action(
+                            tool_name=tool_name,
+                            arguments=arguments,
+                            tier=tier.value,
+                            status=action_status,
+                            result=result_data,
+                            error=error_msg,
+                        )
+
+                    # Log tool execution to chat log
+                    self.chat_logger.log_tool_result(
                         tool_name=tool_name,
-                        arguments=arguments,
-                        tier=tier.value,
+                        result=result_data or {"status": action_status, "error": error_msg},
                         status=action_status,
-                        result=result_data,
-                        error=error_msg,
                     )
 
-                # Log tool execution to chat log
-                self.chat_logger.log_tool_result(
-                    tool_name=tool_name,
-                    result=result_data or {"status": action_status, "error": error_msg},
-                    status=action_status,
-                )
+                    # Format tool output for message history
+                    tool_output_str = json.dumps(result_data or {"status": action_status, "error": error_msg}, ensure_ascii=False)
+                    if len(tool_output_str) > 2500:
+                        tool_output_str = tool_output_str[:2500] + "... [truncated for length]"
 
-                # Format tool output for message history
-                tool_output_str = json.dumps(result_data or {"status": action_status, "error": error_msg}, ensure_ascii=False)
-                if len(tool_output_str) > 2500:
-                    tool_output_str = tool_output_str[:2500] + "... [truncated for length]"
-
-                messages.append(
-                    ChatMessage(
-                        role="tool",
-                        content=tool_output_str,
-                        tool_call_id=tc.id,
-                        name=tool_name,
+                    messages.append(
+                        ChatMessage(
+                            role="tool",
+                            content=tool_output_str,
+                            tool_call_id=tc.id,
+                            name=tool_name,
+                        )
                     )
-                )
 
-        timeout_msg = "Maximum conversation turns reached without final response."
-        self.chat_logger.log_assistant(timeout_msg)
-        return timeout_msg
+            timeout_msg = "Maximum conversation turns reached without final response."
+            self.chat_logger.log_assistant(timeout_msg)
+            return timeout_msg
+        except asyncio.CancelledError:
+            logger.info(f"Task processing cancelled for sender {sender_id}")
+            self.chat_logger.log_assistant("[Interrupted by user]")
+            raise
+
+

@@ -1,9 +1,11 @@
 import asyncio
+import base64
 import html as html_lib
+import inspect
 import json
 import logging
 import re
-from typing import Any, Callable, Dict, Optional, Awaitable
+from typing import Any, Callable, Dict, Optional, Awaitable, List
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.ext import (
@@ -187,6 +189,58 @@ async def _send_html(bot: Any, chat_id: int, text: str, **kwargs: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
+def _is_pure_interrupt_text(text: str) -> bool:
+    """
+    Check if a text message is purely an interruption trigger (e.g. 'wait', 'stop', '/stop', '/wait').
+    """
+    if not text:
+        return False
+    raw = text.strip().lower()
+    if raw in ("/stop", "/wait", "/cancel", "/pause", "/interrupt"):
+        return True
+
+    cleaned = re.sub(r"^[^\w/]+|[^\w]+$", "", raw)
+    exact_triggers = {
+        "wait", "stop", "pause", "halt", "hold on", "cancel",
+        "wait please", "please wait", "stop please", "please stop",
+        "wait a sec", "wait a second", "wait a minute", "hold on a sec",
+        "stop now", "stop it", "cancel that", "hold up", "hold on a moment"
+    }
+    if cleaned in exact_triggers:
+        return True
+
+    if re.fullmatch(r"/?(wait|stop|pause|halt|hold\s+on|cancel)[!.,?\s]*", raw):
+        return True
+
+    return False
+
+
+def _is_continue_text(text: str) -> bool:
+    """
+    Check if a text message is a continuation request (e.g. '/continue', 'continue', 'resume').
+    """
+    if not text:
+        return False
+    raw = text.strip().lower()
+    if raw in ("/continue", "/resume", "/proceed", "/go"):
+        return True
+
+    cleaned = re.sub(r"^[^\w/]+|[^\w]+$", "", raw)
+    continue_triggers = {
+        "continue", "resume", "proceed", "go on", "keep going",
+        "continue please", "please continue", "resume please", "please resume",
+        "carry on", "go ahead"
+    }
+    if cleaned in continue_triggers:
+        return True
+
+    if re.fullmatch(r"/?(continue|resume|proceed|go\s+on|keep\s+going)[!.,?\s]*", raw):
+        return True
+
+    return False
+
+
+# ---------------------------------------------------------------------------
 # TelegramChannel
 # ---------------------------------------------------------------------------
 
@@ -204,6 +258,29 @@ class TelegramChannel(BaseChannel):
         self.message_handler_callback = message_handler_callback
         self.app: Optional[Application] = None
         self.pending_confirmations: Dict[str, asyncio.Future[bool]] = {}
+        self.active_tasks: Dict[str, asyncio.Task] = {}
+        self.active_placeholders: Dict[str, Any] = {}
+        self.active_typing_tasks: Dict[str, asyncio.Task] = {}
+        self.last_interrupted_drafts: Dict[str, str] = {}
+
+    def cancel_active_task(self, sender_id: str | int) -> bool:
+        """Cancel any ongoing processing task for the given sender ID."""
+        sender_key = str(sender_id)
+        task = self.active_tasks.get(sender_key)
+        cancelled = False
+        if task and not task.done():
+            task.cancel()
+            cancelled = True
+
+        typing_task = self.active_typing_tasks.pop(sender_key, None)
+        if typing_task and not typing_task.done():
+            typing_task.cancel()
+
+        for conf_id, fut in list(self.pending_confirmations.items()):
+            if not fut.done():
+                fut.cancel()
+
+        return cancelled
 
     async def start(self) -> None:
         if not self.bot_token:
@@ -214,7 +291,15 @@ class TelegramChannel(BaseChannel):
 
         self.app.add_handler(CommandHandler("start", self._handle_start))
         self.app.add_handler(CommandHandler("help", self._handle_help))
+        self.app.add_handler(CommandHandler("stop", self._handle_interrupt_command))
+        self.app.add_handler(CommandHandler("wait", self._handle_interrupt_command))
+        self.app.add_handler(CommandHandler("cancel", self._handle_interrupt_command))
+        self.app.add_handler(CommandHandler("pause", self._handle_interrupt_command))
+        self.app.add_handler(CommandHandler("continue", self._handle_continue_command))
+        self.app.add_handler(CommandHandler("resume", self._handle_continue_command))
         self.app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_incoming_text))
+        self.app.add_handler(MessageHandler(filters.PHOTO, self._handle_incoming_photo))
+        self.app.add_handler(MessageHandler(filters.Document.IMAGE, self._handle_incoming_document_image))
         self.app.add_handler(CallbackQueryHandler(self._handle_callback_query))
 
         await self.app.initialize()
@@ -225,6 +310,9 @@ class TelegramChannel(BaseChannel):
     async def stop(self) -> None:
         if self.app:
             try:
+                for sender_key in list(self.active_tasks.keys()):
+                    self.cancel_active_task(sender_key)
+
                 if self.app.updater and self.app.updater.running:
                     logger.info("Stopping Telegram updater...")
                     try:
@@ -268,10 +356,55 @@ class TelegramChannel(BaseChannel):
         help_text = (
             "🤖 **APOLLO Commands & Capabilities**\n\n"
             "Just chat naturally to ask questions or trigger actions.\n"
+            "• `/stop` or `/wait` (or say **wait** / **stop**): Interrupt active responses.\n"
+            "• `/continue` or `/resume` (or say **continue**): Resume an interrupted response.\n"
+            "• **Steer-in-Flight**: Send a revised instruction while APOLLO is responding to immediately pivot!\n"
             "• Permission policy strictly enforces `auto`, `logged`, and `confirm` tiers.\n"
             "• Destructive actions will present interactive approval buttons.\n"
         )
         await _reply_html(update.message, help_text)
+
+    async def _handle_interrupt_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.effective_user or not update.message:
+            return
+        sender_id = update.effective_user.id
+        if not self.auth_guard.is_authorized(sender_id):
+            return
+
+        was_active = self.cancel_active_task(sender_id)
+        if was_active:
+            logger.info(f"Interrupted active task for sender {sender_id} via command")
+            await update.message.reply_text("🛑 <b>Interrupted.</b> Active response stopped.", parse_mode=ParseMode.HTML)
+        else:
+            await update.message.reply_text("ℹ️ No active task or generation is currently running.")
+
+    async def _handle_continue_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.effective_user or not update.message:
+            return
+        sender_id = update.effective_user.id
+        if not self.auth_guard.is_authorized(sender_id):
+            return
+
+        sender_key = str(sender_id)
+        active_task = self.active_tasks.get(sender_key)
+        if active_task and not active_task.done():
+            await update.message.reply_text("⏳ Already generating a response. Send /stop or **wait** to interrupt.")
+            return
+
+        last_draft = self.last_interrupted_drafts.get(sender_key)
+        if last_draft:
+            continuation_prompt = (
+                f"Please continue and complete your previous response right where you were interrupted. "
+                f"Here is what you had generated so far before being stopped:\n\n{last_draft}"
+            )
+        else:
+            continuation_prompt = "Please continue your previous response from where you left off."
+
+        if self.message_handler_callback:
+            task = asyncio.create_task(
+                self._execute_message_flow(update=update, context=context, sender_id=sender_id, user_text=continuation_prompt)
+            )
+            self.active_tasks[sender_key] = task
 
     async def _handle_incoming_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not update.effective_user or not update.message or not update.message.text:
@@ -284,91 +417,280 @@ class TelegramChannel(BaseChannel):
             return
 
         user_text = update.message.text.strip()
+        sender_key = str(sender_id)
         logger.info(f"Received message from owner ({sender_id}): '{user_text}'")
 
-        if self.message_handler_callback:
-            chat_id = update.effective_chat.id
+        existing_task = self.active_tasks.get(sender_key)
+        has_active = existing_task is not None and not existing_task.done()
 
-            async def _keep_typing() -> None:
-                try:
-                    while True:
-                        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
-                        await asyncio.sleep(4)
-                except asyncio.CancelledError:
-                    pass
-
-            typing_task = asyncio.create_task(_keep_typing())
-            placeholder = None
-            try:
-                placeholder = await update.message.reply_text("<i>Thinking...</i>", parse_mode=ParseMode.HTML)
-            except Exception:
-                try:
-                    placeholder = await update.message.reply_text("Thinking...")
-                except Exception:
-                    pass
-
-            streamed_tokens: list[str] = []
-            last_edit_time = 0.0
-
-            async def _on_token(token: str) -> None:
-                nonlocal last_edit_time
-                if not placeholder:
+        # 1. Pure Interrupt check (e.g. "wait", "stop", "/stop", "hold on")
+        if _is_pure_interrupt_text(user_text):
+            if has_active:
+                logger.info(f"Interrupted active task for sender {sender_id} upon pure interrupt '{user_text}'")
+                self.cancel_active_task(sender_id)
+                await update.message.reply_text("🛑 <b>Interrupted.</b> Response generation stopped.", parse_mode=ParseMode.HTML)
+                return
+            else:
+                if user_text.startswith("/") or user_text.lower() in ("stop", "cancel"):
+                    await update.message.reply_text("ℹ️ No active task or generation is currently running.")
                     return
-                streamed_tokens.append(token)
-                now = asyncio.get_event_loop().time()
-                if now - last_edit_time >= 1.2:
-                    current_text = "".join(streamed_tokens).strip()
-                    if current_text:
-                        last_edit_time = now
-                        first_chunk = _chunk_text(current_text)[0]
+                elif user_text.lower() in ("wait", "hold on", "pause", "please wait"):
+                    await update.message.reply_text("⏸️ Standing by. Let me know what you need!")
+                    return
+
+        # 2. Continuation check (e.g. "continue", "resume", "/continue")
+        if _is_continue_text(user_text):
+            if has_active:
+                await update.message.reply_text("⏳ Already generating a response. Send /stop or **wait** to interrupt.")
+                return
+
+            last_draft = self.last_interrupted_drafts.get(sender_key)
+            if last_draft:
+                continuation_prompt = (
+                    f"Please continue and complete your previous response right where you were interrupted. "
+                    f"Here is what you had generated so far before being stopped:\n\n{last_draft}"
+                )
+            else:
+                continuation_prompt = "Please continue your previous response from where you left off."
+
+            if self.message_handler_callback:
+                task = asyncio.create_task(
+                    self._execute_message_flow(update=update, context=context, sender_id=sender_id, user_text=continuation_prompt)
+                )
+                self.active_tasks[sender_key] = task
+            return
+
+        # 3. Steer-in-Flight check: If a new prompt/revision is sent while generation is active
+        if has_active:
+            logger.info(f"Steer-in-flight: Cancelling active task for sender {sender_id} to pivot to: '{user_text}'")
+            self.cancel_active_task(sender_id)
+            await asyncio.sleep(0.05)
+
+        # 4. Launch message processing
+        if self.message_handler_callback:
+            task = asyncio.create_task(
+                self._execute_message_flow(update=update, context=context, sender_id=sender_id, user_text=user_text)
+            )
+            self.active_tasks[sender_key] = task
+
+    async def _handle_incoming_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.effective_user or not update.message or not update.message.photo:
+            return
+
+        sender_id = update.effective_user.id
+        if not self.auth_guard.is_authorized(sender_id):
+            logger.warning(f"Access denied: rejected photo from unauthorized user ID {sender_id}")
+            await update.message.reply_text("⛔ Unauthorized user identity. Access denied.")
+            return
+
+        sender_key = str(sender_id)
+        caption = (update.message.caption or "").strip()
+        user_prompt = caption if caption else "Please analyze and describe this image in detail. Extract any visible text/code, explain diagrams/UI elements, and highlight key details."
+        logger.info(f"Received photo from owner ({sender_id}) with caption: '{caption}'")
+
+        existing_task = self.active_tasks.get(sender_key)
+        has_active = existing_task is not None and not existing_task.done()
+        if has_active:
+            logger.info(f"Steer-in-flight: Cancelling active task for sender {sender_id} to pivot to photo")
+            self.cancel_active_task(sender_id)
+            await asyncio.sleep(0.05)
+
+        try:
+            # Get largest resolution photo
+            photo = update.message.photo[-1]
+            tg_file = await context.bot.get_file(photo.file_id)
+            photo_bytes = await tg_file.download_as_bytearray()
+            b64_str = base64.b64encode(photo_bytes).decode("utf-8")
+            data_uri = f"data:image/jpeg;base64,{b64_str}"
+
+            if self.message_handler_callback:
+                task = asyncio.create_task(
+                    self._execute_message_flow(
+                        update=update,
+                        context=context,
+                        sender_id=sender_id,
+                        user_text=user_prompt,
+                        images=[data_uri],
+                    )
+                )
+                self.active_tasks[sender_key] = task
+        except Exception as e:
+            logger.error(f"Failed to process incoming photo: {e}")
+            await update.message.reply_text(f"⚠️ Error downloading/processing image: {e}")
+
+    async def _handle_incoming_document_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not update.effective_user or not update.message or not update.message.document:
+            return
+
+        sender_id = update.effective_user.id
+        if not self.auth_guard.is_authorized(sender_id):
+            logger.warning(f"Access denied: rejected document image from unauthorized user ID {sender_id}")
+            await update.message.reply_text("⛔ Unauthorized user identity. Access denied.")
+            return
+
+        doc = update.message.document
+        mime_type = doc.mime_type or "image/png"
+        if not mime_type.startswith("image/"):
+            return
+
+        sender_key = str(sender_id)
+        caption = (update.message.caption or "").strip()
+        user_prompt = caption if caption else "Please analyze and describe this image in detail. Extract any visible text/code, explain diagrams/UI elements, and highlight key details."
+        logger.info(f"Received document image ({mime_type}) from owner ({sender_id}) with caption: '{caption}'")
+
+        existing_task = self.active_tasks.get(sender_key)
+        has_active = existing_task is not None and not existing_task.done()
+        if has_active:
+            logger.info(f"Steer-in-flight: Cancelling active task for sender {sender_id} to pivot to document image")
+            self.cancel_active_task(sender_id)
+            await asyncio.sleep(0.05)
+
+        try:
+            tg_file = await context.bot.get_file(doc.file_id)
+            file_bytes = await tg_file.download_as_bytearray()
+            b64_str = base64.b64encode(file_bytes).decode("utf-8")
+            data_uri = f"data:{mime_type};base64,{b64_str}"
+
+            if self.message_handler_callback:
+                task = asyncio.create_task(
+                    self._execute_message_flow(
+                        update=update,
+                        context=context,
+                        sender_id=sender_id,
+                        user_text=user_prompt,
+                        images=[data_uri],
+                    )
+                )
+                self.active_tasks[sender_key] = task
+        except Exception as e:
+            logger.error(f"Failed to process incoming document image: {e}")
+            await update.message.reply_text(f"⚠️ Error downloading/processing image document: {e}")
+
+    async def _execute_message_flow(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+        sender_id: int,
+        user_text: str,
+        images: Optional[List[str]] = None,
+    ) -> None:
+        sender_key = str(sender_id)
+        chat_id = update.effective_chat.id
+
+        async def _keep_typing() -> None:
+            try:
+                while True:
+                    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+                    await asyncio.sleep(4)
+            except asyncio.CancelledError:
+                pass
+
+        typing_task = asyncio.create_task(_keep_typing())
+        self.active_typing_tasks[sender_key] = typing_task
+
+        placeholder = None
+        try:
+            placeholder = await update.message.reply_text("<i>Thinking...</i>", parse_mode=ParseMode.HTML)
+        except Exception:
+            try:
+                placeholder = await update.message.reply_text("Thinking...")
+            except Exception:
+                pass
+        self.active_placeholders[sender_key] = placeholder
+
+        streamed_tokens: list[str] = []
+        last_edit_time = 0.0
+
+        async def _on_token(token: str) -> None:
+            nonlocal last_edit_time
+            streamed_tokens.append(token)
+            if not placeholder:
+                return
+            now = asyncio.get_event_loop().time()
+            if now - last_edit_time >= 1.2:
+                current_text = "".join(streamed_tokens).strip()
+                if current_text:
+                    last_edit_time = now
+                    first_chunk = _chunk_text(current_text)[0]
+                    try:
+                        await placeholder.edit_text(_md_to_html(first_chunk) + " ▌", parse_mode=ParseMode.HTML)
+                    except Exception:
+                        pass
+
+        try:
+            sig = inspect.signature(self.message_handler_callback)
+            call_kwargs: Dict[str, Any] = {}
+            if "on_token" in sig.parameters:
+                call_kwargs["on_token"] = _on_token
+            if "images" in sig.parameters and images:
+                call_kwargs["images"] = images
+
+            response = await self.message_handler_callback(str(sender_id), user_text, **call_kwargs)
+
+            if response and placeholder:
+                chunks = _chunk_text(response)
+                if chunks:
+                    try:
+                        await placeholder.edit_text(_md_to_html(chunks[0]), parse_mode=ParseMode.HTML)
+                    except Exception:
                         try:
-                            await placeholder.edit_text(_md_to_html(first_chunk) + " ▌", parse_mode=ParseMode.HTML)
+                            await placeholder.edit_text(chunks[0])
                         except Exception:
                             pass
 
-            try:
-                # Call message handler with token streaming callback if supported
-                import inspect
-                sig = inspect.signature(self.message_handler_callback)
-                if "on_token" in sig.parameters:
-                    response = await self.message_handler_callback(str(sender_id), user_text, on_token=_on_token)
-                else:
-                    response = await self.message_handler_callback(str(sender_id), user_text)
-
-                if response and placeholder:
-                    chunks = _chunk_text(response)
-                    if chunks:
-                        # Finalize first chunk into the placeholder
+                    for follow_up in chunks[1:]:
+                        html_chunk = _md_to_html(follow_up)
                         try:
-                            await placeholder.edit_text(_md_to_html(chunks[0]), parse_mode=ParseMode.HTML)
+                            await update.message.chat.send_message(html_chunk, parse_mode=ParseMode.HTML)
                         except Exception:
-                            try:
-                                await placeholder.edit_text(chunks[0])
-                            except Exception:
-                                pass
+                            await update.message.chat.send_message(follow_up)
+            elif response:
+                await _reply_html(update.message, response)
 
-                        # Send any subsequent chunks as follow-up messages
-                        for follow_up in chunks[1:]:
-                            html_chunk = _md_to_html(follow_up)
-                            try:
-                                await update.message.chat.send_message(html_chunk, parse_mode=ParseMode.HTML)
-                            except Exception:
-                                await update.message.chat.send_message(follow_up)
-                elif response:
-                    await _reply_html(update.message, response)
-
-            except Exception as e:
-                logger.error(f"Error handling Telegram message: {e}")
-                error_text = f"⚠️ Error executing request: {e}"
+        except asyncio.CancelledError:
+            logger.info(f"Task for sender {sender_id} cancelled.")
+            typing_task.cancel()
+            draft = "".join(streamed_tokens).strip()
+            if draft:
+                self.last_interrupted_drafts[sender_key] = draft
+                if placeholder:
+                    first_chunk = _chunk_text(draft)[0]
+                    try:
+                        await placeholder.edit_text(
+                            _md_to_html(first_chunk) + "\n\n⏸️ <i>[Interrupted draft saved • Send /continue to resume]</i>",
+                            parse_mode=ParseMode.HTML,
+                        )
+                    except Exception:
+                        try:
+                            await placeholder.edit_text(
+                                first_chunk + "\n\n[Interrupted draft saved • Send /continue to resume]"
+                            )
+                        except Exception:
+                            pass
+            else:
                 if placeholder:
                     try:
-                        await placeholder.edit_text(error_text)
+                        await placeholder.edit_text("⏸️ <i>Generation interrupted.</i>", parse_mode=ParseMode.HTML)
                     except Exception:
-                        await update.message.reply_text(error_text)
-                else:
+                        pass
+            raise
+        except Exception as e:
+            logger.error(f"Error handling Telegram message: {e}")
+            error_text = f"⚠️ Error executing request: {e}"
+            if placeholder:
+                try:
+                    await placeholder.edit_text(error_text)
+                except Exception:
                     await update.message.reply_text(error_text)
-            finally:
-                typing_task.cancel()
+            else:
+                await update.message.reply_text(error_text)
+        finally:
+            typing_task.cancel()
+            self.active_typing_tasks.pop(sender_key, None)
+            self.active_placeholders.pop(sender_key, None)
+            self.active_tasks.pop(sender_key, None)
+
+
 
     async def send_message(self, recipient_id: str, text: str) -> None:
         if not self.app or not self.app.bot:

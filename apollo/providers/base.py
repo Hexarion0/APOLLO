@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 
 @dataclass
 class ToolCall:
@@ -12,7 +12,7 @@ class ToolCall:
 @dataclass
 class ChatMessage:
     role: str  # 'system', 'user', 'assistant', 'tool'
-    content: Optional[str] = None
+    content: Optional[Union[str, List[Dict[str, Any]]]] = None
     tool_calls: Optional[List[ToolCall]] = None
     tool_call_id: Optional[str] = None
     name: Optional[str] = None
@@ -48,8 +48,6 @@ class LLMResponse:
     model_used: Optional[str] = None
     was_fallback: bool = False
 
-from typing import Any, Awaitable, Callable, Dict, List, Optional
-
 class BaseLLMProvider(ABC):
     """Abstract interface for LLM providers (NVIDIA NIM, Anthropic, OpenAI, Ollama, etc.)."""
 
@@ -64,3 +62,21 @@ class BaseLLMProvider(ABC):
     ) -> LLMResponse:
         """Generate a response from the LLM provider given conversation history and tools."""
         pass
+
+    async def analyze_image(
+        self,
+        image_data_uri: str,
+        prompt: str = "Describe and analyze this image in detail, including any text, code, or UI elements.",
+    ) -> str:
+        """Analyze an image using a vision-capable model."""
+        messages = [
+            ChatMessage(
+                role="user",
+                content=[
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": image_data_uri}},
+                ],
+            )
+        ]
+        response = await self.generate_response(messages=messages)
+        return response.content or "No analysis generated."
