@@ -141,6 +141,67 @@ def _render_thinking_spoiler(thinking: str) -> str:
     return f'<blockquote expandable>💭 <b>Reasoning</b>\n\n{escaped}</blockquote>'
 
 
+def _format_streaming_display(
+    streamed_text: str,
+    tool_status_lines: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Format currently streamed content (including live real-time thinking and tool status) for Telegram preview."""
+    parts: list[str] = []
+
+    # 1. Tool status progress block
+    if tool_status_lines:
+        status_block = _build_status_block(tool_status_lines)
+        if status_block:
+            parts.append(status_block)
+
+    text = streamed_text.strip()
+    if not text:
+        if not parts:
+            return "💭 <i>Thinking…</i> ▌"
+        return "\n\n".join(parts) + "\n\n💭 <i>Thinking…</i> ▌"
+
+    # Check if there is a <think> block
+    has_think_open = bool(re.search(r"<think>", text, flags=re.IGNORECASE))
+    has_think_close = bool(re.search(r"</think>", text, flags=re.IGNORECASE))
+
+    if has_think_open:
+        if not has_think_close:
+            # Currently actively generating thoughts in real-time
+            think_match = re.search(r"<think>(.*)$", text, flags=re.DOTALL | re.IGNORECASE)
+            thinking_body = think_match.group(1).strip() if think_match else ""
+            escaped_think = html_lib.escape(thinking_body)
+            if len(escaped_think) > 3400:
+                escaped_think = "…" + escaped_think[-3300:]
+
+            think_html = f"💭 <b>Thinking…</b>\n<blockquote expandable><i>{escaped_think} ▌</i></blockquote>"
+            parts.append(think_html)
+            return "\n\n".join(parts)
+        else:
+            # Thinking block finished, now streaming answer
+            think_match = re.search(r"<think>(.*?)</think>", text, flags=re.DOTALL | re.IGNORECASE)
+            thinking_body = think_match.group(1).strip() if think_match else ""
+            after_think = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL | re.IGNORECASE).strip()
+
+            if thinking_body:
+                escaped_think = html_lib.escape(thinking_body)
+                if len(escaped_think) > 2000:
+                    escaped_think = escaped_think[:1900] + "…"
+                parts.append(f"<blockquote expandable>💭 <b>Reasoning</b>\n\n<i>{escaped_think}</i></blockquote>")
+
+            if after_think:
+                first_chunk = _chunk_text(after_think, max_chunk_size=3000)[0]
+                parts.append(_md_to_html(first_chunk) + " ▌")
+            else:
+                parts.append("<i>Formulating response…</i> ▌")
+
+            return "\n\n".join(parts)
+    else:
+        # Standard streaming without <think> tag
+        first_chunk = _chunk_text(text, max_chunk_size=3000)[0]
+        parts.append(_md_to_html(first_chunk) + " ▌")
+        return "\n\n".join(parts)
+
+
 # ---------------------------------------------------------------------------
 # Markdown → Telegram HTML converter
 # ---------------------------------------------------------------------------
@@ -725,13 +786,13 @@ class TelegramChannel(BaseChannel):
             if not placeholder:
                 return
             now = asyncio.get_event_loop().time()
-            if now - last_edit_time >= 1.2:
+            if now - last_edit_time >= 0.9:
                 current_text = "".join(streamed_tokens).strip()
                 if current_text:
                     last_edit_time = now
-                    first_chunk = _chunk_text(current_text)[0]
+                    display_html = _format_streaming_display(current_text, tool_status_lines)
                     try:
-                        await placeholder.edit_text(_md_to_html(first_chunk) + " ▌", parse_mode=ParseMode.HTML)
+                        await placeholder.edit_text(display_html, parse_mode=ParseMode.HTML)
                     except Exception:
                         pass
 
@@ -757,9 +818,10 @@ class TelegramChannel(BaseChannel):
             now = asyncio.get_event_loop().time()
             if now - last_status_edit >= 0.8:
                 last_status_edit = now
-                status_html = _build_status_block(tool_status_lines)
+                current_text = "".join(streamed_tokens).strip()
+                display_html = _format_streaming_display(current_text, tool_status_lines)
                 try:
-                    await placeholder.edit_text(status_html, parse_mode=ParseMode.HTML)
+                    await placeholder.edit_text(display_html, parse_mode=ParseMode.HTML)
                 except Exception:
                     pass
 

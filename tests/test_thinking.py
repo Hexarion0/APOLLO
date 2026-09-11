@@ -224,3 +224,47 @@ async def test_gateway_thinking_in_response(tmp_path):
     assert thinking is not None
     assert "I need to think about what 42 means." in thinking
     assert "The answer is 42." in reply
+
+
+# ─────────────────────────────────────────────
+# 5.  _format_streaming_display (Real-time live thinking)
+# ─────────────────────────────────────────────
+
+def test_format_streaming_active_thinking():
+    """Test real-time thinking formatting while <think> is still generating (unclosed)."""
+    from apollo.channels.telegram import _format_streaming_display
+
+    raw_stream = "<think>\nAnalyzing the user's question about quantum physics..."
+    html = _format_streaming_display(raw_stream)
+
+    assert "Thinking…" in html
+    assert "blockquote" in html
+    assert "quantum physics" in html
+    assert "▌" in html
+
+
+def test_format_streaming_completed_thinking_with_answer():
+    """Test formatting when thinking has finished and response is streaming."""
+    from apollo.channels.telegram import _format_streaming_display
+
+    raw_stream = "<think>Calculated the velocity</think>The velocity is 45 m/s."
+    html = _format_streaming_display(raw_stream)
+
+    assert "Reasoning" in html
+    assert "Calculated the velocity" in html
+    assert "The velocity is 45 m/s." in html
+    assert "▌" in html
+
+
+def test_format_streaming_with_tool_status_and_thinking():
+    """Test tool status lines combined with live thinking preview."""
+    from apollo.channels.telegram import _format_streaming_display
+
+    tool_lines = [{"name": "web_search", "status": "running", "args": {"query": "weather Tokyo"}}]
+    raw_stream = "<think>Searching the live weather feed"
+    html = _format_streaming_display(raw_stream, tool_status_lines=tool_lines)
+
+    assert "Web Search" in html
+    assert "weather Tokyo" in html
+    assert "Thinking…" in html
+    assert "live weather feed" in html

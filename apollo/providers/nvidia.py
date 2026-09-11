@@ -120,6 +120,7 @@ class NvidiaNIMProvider(BaseLLMProvider):
                             accumulated_content: List[str] = []
                             tool_call_chunks: Dict[int, Dict[str, str]] = {}
                             finish_reason = None
+                            in_think_block = False
 
                             async for chunk in stream:
                                 if not chunk.choices:
@@ -128,7 +129,34 @@ class NvidiaNIMProvider(BaseLLMProvider):
                                 if choice.finish_reason:
                                     finish_reason = choice.finish_reason
                                 delta = choice.delta
+
+                                # Handle explicit reasoning tokens (DeepSeek-R1 / Nemotron / reasoning_content)
+                                reasoning_token = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+                                if reasoning_token:
+                                    if not in_think_block:
+                                        accumulated_content.append("<think>\n")
+                                        if on_token:
+                                            try:
+                                                await on_token("<think>\n")
+                                            except Exception:
+                                                pass
+                                        in_think_block = True
+                                    accumulated_content.append(reasoning_token)
+                                    if on_token:
+                                        try:
+                                            await on_token(reasoning_token)
+                                        except Exception as token_err:
+                                            logger.debug(f"on_token handler exception: {token_err}")
+
                                 if delta.content:
+                                    if in_think_block:
+                                        accumulated_content.append("\n</think>\n")
+                                        if on_token:
+                                            try:
+                                                await on_token("\n</think>\n")
+                                            except Exception:
+                                                pass
+                                        in_think_block = False
                                     accumulated_content.append(delta.content)
                                     try:
                                         await on_token(delta.content)
@@ -151,6 +179,15 @@ class NvidiaNIMProvider(BaseLLMProvider):
                                                 tool_call_chunks[idx]["name"] += tc_chunk.function.name
                                             if tc_chunk.function and tc_chunk.function.arguments:
                                                 tool_call_chunks[idx]["arguments"] += tc_chunk.function.arguments
+
+                            if in_think_block:
+                                accumulated_content.append("\n</think>\n")
+                                if on_token:
+                                    try:
+                                        await on_token("\n</think>\n")
+                                    except Exception:
+                                        pass
+                                in_think_block = False
 
                             parsed_tool_calls: List[ToolCall] = []
                             for idx in sorted(tool_call_chunks.keys()):
@@ -202,7 +239,11 @@ class NvidiaNIMProvider(BaseLLMProvider):
                                         )
                                     )
 
-                            clean_content, thinking = _extract_thinking(message.content or "")
+                            raw_content = message.content or ""
+                            reasoning = getattr(message, "reasoning_content", None) or getattr(message, "reasoning", None)
+                            if reasoning and "<think>" not in raw_content.lower():
+                                raw_content = f"<think>\n{reasoning}\n</think>\n{raw_content}"
+                            clean_content, thinking = _extract_thinking(raw_content)
                             return LLMResponse(
                                 content=clean_content or None,
                                 tool_calls=parsed_tool_calls,
