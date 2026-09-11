@@ -50,12 +50,16 @@ class NvidiaNIMProvider(BaseLLMProvider):
         base_url: str = "https://integrate.api.nvidia.com/v1",
         model: str = "nvidia/nemotron-3-ultra-550b-a55b",
         fallback_models: Optional[List[str]] = None,
-        vision_model: str = "meta/llama-3.2-11b-vision-instruct",
+        vision_model: str = "nvidia/neva-22b",
     ):
         self.api_key = api_key
         self.base_url = base_url
         self.model = model
-        self.fallback_models = fallback_models if fallback_models is not None else ["nvidia/nemotron-3-super-120b-a12b", "meta/llama-3.2-11b-vision-instruct"]
+        self.fallback_models = fallback_models if fallback_models is not None else [
+            "nvidia/nemotron-3-super-120b-a12b",
+            "nvidia/nemotron-4-340b-instruct",
+            "nvidia/neva-22b",
+        ]
         self.vision_model = vision_model
         self._client: Optional[AsyncOpenAI] = None
 

@@ -69,7 +69,7 @@ async def test_nvidia_provider_vision_routing():
     provider = NvidiaNIMProvider(
         api_key="mock_key",
         model="nvidia/nemotron-3-ultra-550b-a55b",
-        vision_model="meta/llama-3.2-11b-vision-instruct",
+        vision_model="nvidia/neva-22b",
         fallback_models=["nvidia/nemotron-3-super-120b-a12b"],
     )
 
@@ -101,7 +101,7 @@ async def test_nvidia_provider_vision_routing():
     
     # Check that model passed in kwargs was the vision_model
     call_args, call_kwargs = mock_completions.create.call_args
-    assert call_kwargs["model"] == "meta/llama-3.2-11b-vision-instruct"
+    assert call_kwargs["model"] == "nvidia/neva-22b"
 
 @pytest.mark.asyncio
 async def test_gateway_process_message_with_image(tmp_path):

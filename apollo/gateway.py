@@ -468,9 +468,34 @@ class ApolloGateway:
                         )
                     )
 
-            timeout_msg = "Maximum conversation turns reached without final response."
-            self.chat_logger.log_assistant(timeout_msg)
-            return timeout_msg
+            # If all turns completed with tool executions, perform a final synthesis pass
+            try:
+                synth_messages = messages + [
+                    ChatMessage(
+                        role="system",
+                        content="Synthesize all tool outputs above and provide your complete, final response to the owner. Do not request any further tools.",
+                    )
+                ]
+                final_synth = await self.provider.generate_response(
+                    messages=synth_messages,
+                    tools=None,
+                    on_token=on_token,
+                )
+                if final_synth.thinking:
+                    all_thinking.append(final_synth.thinking)
+                final_content = final_synth.content or "Completed requested actions."
+            except Exception as synth_err:
+                logger.warning(f"Final synthesis pass encountered error: {synth_err}")
+                final_content = "Completed requested actions."
+
+            messages.append(ChatMessage(role="assistant", content=final_content))
+            self.memory_store.add_chat_message(channel=channel_name, sender_id=sender_id, role="assistant", content=final_content)
+            self.chat_logger.log_assistant(final_content)
+
+            if all_thinking:
+                combined_thinking = "\n\n---\n\n".join(all_thinking)
+                return f"\x00THINK\x00{combined_thinking}\x00ENDTHINK\x00{final_content}"
+            return final_content
         except asyncio.CancelledError:
             logger.info(f"Task processing cancelled for sender {sender_id}")
             self.chat_logger.log_assistant("[Interrupted by user]")

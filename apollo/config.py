@@ -19,8 +19,8 @@ class ProviderConfig:
     api_key: str = ""
     base_url: str = "https://integrate.api.nvidia.com/v1"
     model: str = "nvidia/nemotron-3-ultra-550b-a55b"
-    fallback_models: List[str] = field(default_factory=lambda: ["nvidia/nemotron-3-super-120b-a12b", "meta/llama-3.2-90b-vision-instruct", "meta/llama-3.2-11b-vision-instruct"])
-    vision_model: str = "meta/llama-3.2-90b-vision-instruct"
+    fallback_models: List[str] = field(default_factory=lambda: ["nvidia/nemotron-3-super-120b-a12b", "nvidia/nemotron-4-340b-instruct", "nvidia/neva-22b"])
+    vision_model: str = "nvidia/neva-22b"
     temperature: float = 0.7
     top_p: float = 1.0
     max_tokens: int = 2048
@@ -34,7 +34,7 @@ class TelegramConfig:
 
 @dataclass
 class GatewayConfig:
-    max_turns: int = 12
+    max_turns: int = 25
     persona_file: Path = Path("persona.txt")
     startup_notification: bool = True
     startup_message: str = "🚀 **APOLLO Online**: System booted and services are operational."
