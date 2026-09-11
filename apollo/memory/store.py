@@ -46,6 +46,19 @@ class SQLiteMemoryStore:
                 )
                 """
             )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                    task_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    cron_expr TEXT,
+                    interval_seconds INTEGER,
+                    enabled INTEGER DEFAULT 1,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
             conn.commit()
         logger.info(f"Initialized SQLite Memory Store at {self.db_path}")
 
@@ -115,3 +128,47 @@ class SQLiteMemoryStore:
             )
             rows = cursor.fetchall()
             return [dict(r) for r in reversed(rows)]
+
+    def save_scheduled_task(
+        self,
+        task_id: str,
+        name: str,
+        prompt: str,
+        cron_expr: Optional[str] = None,
+        interval_seconds: Optional[int] = None,
+        enabled: bool = True,
+    ) -> None:
+        """Persist or update a scheduled task in the database."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                INSERT INTO scheduled_tasks (task_id, name, prompt, cron_expr, interval_seconds, enabled, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    name = excluded.name,
+                    prompt = excluded.prompt,
+                    cron_expr = excluded.cron_expr,
+                    interval_seconds = excluded.interval_seconds,
+                    enabled = excluded.enabled
+                """,
+                (task_id, name, prompt, cron_expr, interval_seconds, 1 if enabled else 0, now),
+            )
+            conn.commit()
+
+    def remove_scheduled_task(self, task_id: str) -> bool:
+        """Remove a persisted scheduled task by task_id."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM scheduled_tasks WHERE task_id = ?", (task_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+
+    def get_all_scheduled_tasks(self) -> List[Dict[str, Any]]:
+        """Retrieve all persisted scheduled tasks."""
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT task_id, name, prompt, cron_expr, interval_seconds, enabled FROM scheduled_tasks")
+            rows = cursor.fetchall()
+            return [dict(r) for r in rows]

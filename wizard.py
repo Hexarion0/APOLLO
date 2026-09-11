@@ -222,6 +222,7 @@ Restart=always
 RestartSec=5
 KillMode=process
 TimeoutStopSec=15
+PassEnvironment=WAYLAND_DISPLAY XDG_RUNTIME_DIR HYPRLAND_INSTANCE_SIGNATURE DISPLAY PULSE_SERVER
 
 StandardOutput=journal
 StandardError=journal

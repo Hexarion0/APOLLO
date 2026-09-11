@@ -19,6 +19,10 @@ class BaseChannel(ABC):
         """Send a text message to a user or chat ID."""
         pass
 
+    async def send_photo(self, recipient_id: str, photo_path: str, caption: Optional[str] = None) -> None:
+        """Send a photo to a user or chat ID (optional implementation in channels)."""
+        pass
+
     @abstractmethod
     async def request_confirmation(
         self,

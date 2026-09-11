@@ -32,6 +32,8 @@ from apollo.tools.builtins import (
 )
 from apollo.tools.internet import DownloadFileTool, FetchURLTool, GetWeatherTool, WebSearchTool
 from apollo.tools.vision import AnalyzeImageTool
+from apollo.tools.desktop import TakeScreenshotTool, MediaControlTool, SystemPowerTool
+from apollo.tools.reminders import SetReminderTool, ListRemindersTool, CancelReminderTool
 from apollo.tools.registry import ToolRegistry
 
 from apollo.persona import DEFAULT_PERSONA_PROMPT, get_proactive_prompt_for_time
@@ -69,7 +71,10 @@ class ApolloGateway:
         self.channel = channel
 
         # Scheduler
-        self.scheduler = BackgroundScheduler(task_callback=self._handle_scheduled_task)
+        self.scheduler = BackgroundScheduler(
+            task_callback=self._handle_scheduled_task,
+            memory_store=self.memory_store,
+        )
 
         # Tool Registry
         self.tools = ToolRegistry()
@@ -110,6 +115,19 @@ class ApolloGateway:
         self.tools.register(GetWeatherTool())
         # Vision tool
         self.tools.register(AnalyzeImageTool(provider=self.provider))
+        # Desktop control tools
+        self.tools.register(
+            TakeScreenshotTool(
+                channel=self.channel,
+                owner_id=str(self.config.telegram.owner_id) if self.config.telegram.owner_id else None,
+            )
+        )
+        self.tools.register(MediaControlTool())
+        self.tools.register(SystemPowerTool())
+        # Reminder tools
+        self.tools.register(SetReminderTool(scheduler=self.scheduler))
+        self.tools.register(ListRemindersTool(scheduler=self.scheduler))
+        self.tools.register(CancelReminderTool(scheduler=self.scheduler))
 
     async def start(self) -> None:
         """Start APOLLO Gateway engine, channel, and scheduler."""
@@ -154,7 +172,16 @@ class ApolloGateway:
         logger.info(f"Executing scheduled task [{task_id}]: {prompt}")
         owner_id = str(self.config.telegram.owner_id)
 
-        if task_id == "proactive_persona_checkin":
+        if task_id.startswith("reminder_"):
+            # One-shot precision timer / reminder
+            if self.channel and owner_id != "0":
+                await self.channel.send_message(
+                    recipient_id=owner_id,
+                    text=f"🔔 <b>REMINDER ALERT</b> 🔔\n\n📌 <b>{prompt}</b>",
+                )
+            # Remove one-shot task so it doesn't repeat
+            self.scheduler.remove_task(task_id)
+        elif task_id == "proactive_persona_checkin":
             proactive_prompt = get_proactive_prompt_for_time()
             response = await self.process_message(
                 sender_id=owner_id,
@@ -189,6 +216,57 @@ class ApolloGateway:
                 sanitized.append(ChatMessage(role=role, content=content))
         return sanitized
 
+    def _compact_context(
+        self,
+        messages: List[ChatMessage],
+        max_total_chars: int = 40000,
+    ) -> List[ChatMessage]:
+        """Ensure context messages do not exceed maximum character budget,
+        preserving the system prompt and the most recent user/assistant turns."""
+        if not messages or len(messages) <= 2:
+            return messages
+
+        system_msg = messages[0] if messages[0].role == "system" else None
+        chat_msgs = messages[1:] if system_msg else messages[:]
+
+        def _msg_chars(msg: ChatMessage) -> int:
+            if isinstance(msg.content, str):
+                return len(msg.content)
+            elif isinstance(msg.content, list):
+                total = 0
+                for part in msg.content:
+                    if isinstance(part, dict) and "text" in part:
+                        total += len(part["text"])
+                    else:
+                        total += 200
+                return total
+            return 0
+
+        system_len = _msg_chars(system_msg) if system_msg else 0
+        budget_for_history = max(100, max_total_chars - system_len)
+
+        total_chat_chars = sum(_msg_chars(m) for m in chat_msgs)
+        if total_chat_chars <= budget_for_history:
+            return messages
+
+        retained: List[ChatMessage] = []
+        accumulated = 0
+        for msg in reversed(chat_msgs):
+            char_count = _msg_chars(msg)
+            if accumulated + char_count > budget_for_history and retained:
+                break
+            retained.append(msg)
+            accumulated += char_count
+
+        retained.reverse()
+
+        result = [system_msg] if system_msg else []
+        if len(retained) < len(chat_msgs):
+            dropped_count = len(chat_msgs) - len(retained)
+            result.append(ChatMessage(role="system", content=f"[Context budget managed: {dropped_count} earlier turns compacted]"))
+        result.extend(retained)
+        return result
+
     def cancel_task(self, sender_id: str) -> bool:
         """Cancel an active response/task for sender_id if supported by the channel."""
         if self.channel and hasattr(self.channel, "cancel_active_task"):
@@ -202,8 +280,19 @@ class ApolloGateway:
         images: Optional[List[str]] = None,
         max_turns: Optional[int] = None,
         on_token: Optional[Callable[[str], Awaitable[None]]] = None,
+        on_tool_status: Optional[Callable[[str, str, Dict[str, Any]], Awaitable[None]]] = None,
     ) -> str:
-        """Process an incoming text or multimodal message from the owner through the LLM tool execution loop."""
+        """Process an incoming text or multimodal message from the owner through the LLM tool execution loop.
+
+        Args:
+            sender_id: Owner's ID string.
+            user_message: The user's text prompt.
+            images: Optional list of base64 data URIs for multimodal content.
+            max_turns: Maximum agentic loop iterations.
+            on_token: Streaming token callback.
+            on_tool_status: Called with (tool_name, status, args) where status is
+                            "running", "done", "failed", or "denied".
+        """
         if max_turns is None:
             max_turns = self.config.gateway.max_turns
 
@@ -232,7 +321,20 @@ class ApolloGateway:
                 content_parts.append({"type": "image_url", "image_url": {"url": img_uri}})
             messages[-1].content = content_parts
 
+        # Compact context to protect against token overflow
+        messages = self._compact_context(messages)
+
         tool_schemas = self.tools.get_openai_schemas()
+
+        # Accumulate all thinking blocks across turns
+        all_thinking: List[str] = []
+
+        async def _fire_tool_status(tool_name: str, status: str, args: Dict[str, Any]) -> None:
+            if on_tool_status:
+                try:
+                    await on_tool_status(tool_name, status, args)
+                except Exception as e:
+                    logger.debug(f"on_tool_status callback error: {e}")
 
         try:
             for turn in range(max_turns):
@@ -252,6 +354,10 @@ class ApolloGateway:
                     else:
                         raise te
 
+                # Capture any thinking content from this turn
+                if response.thinking:
+                    all_thinking.append(response.thinking)
+
                 if not response.tool_calls:
                     final_content = response.content or "No response generated."
                     if response.was_fallback and response.model_used:
@@ -261,6 +367,11 @@ class ApolloGateway:
                     messages.append(ChatMessage(role="assistant", content=final_content))
                     self.memory_store.add_chat_message(channel=channel_name, sender_id=sender_id, role="assistant", content=final_content)
                     self.chat_logger.log_assistant(final_content)
+
+                    # Prepend aggregated thinking as a sentinel so Telegram layer can render it
+                    if all_thinking:
+                        combined_thinking = "\n\n---\n\n".join(all_thinking)
+                        return f"\x00THINK\x00{combined_thinking}\x00ENDTHINK\x00{final_content}"
                     return final_content
 
                 # LLM requested tool calls
@@ -273,6 +384,9 @@ class ApolloGateway:
 
                     logger.info(f"Tool call requested: {tool_name} (tier: {tier.value}) args={arguments}")
                     self.chat_logger.log_tool_call(tool_name, arguments)
+
+                    # Notify channel: tool is starting
+                    await _fire_tool_status(tool_name, "running", arguments)
 
                     # Evaluate Policy Tier
                     should_execute = False
@@ -312,11 +426,15 @@ class ApolloGateway:
                     if should_execute:
                         try:
                             result_data = await self.tools.execute_tool(tool_name, **arguments)
+                            await _fire_tool_status(tool_name, "done", arguments)
                         except Exception as e:
                             logger.error(f"Error executing tool '{tool_name}': {e}")
                             result_data = {"error": str(e)}
                             error_msg = str(e)
                             action_status = "FAILED"
+                            await _fire_tool_status(tool_name, "failed", arguments)
+                    else:
+                        await _fire_tool_status(tool_name, "denied", arguments)
 
                     # Log to audit file if tier is logged or confirm
                     if tier in (PermissionTier.LOGGED, PermissionTier.CONFIRM):
@@ -357,5 +475,4 @@ class ApolloGateway:
             logger.info(f"Task processing cancelled for sender {sender_id}")
             self.chat_logger.log_assistant("[Interrupted by user]")
             raise
-
 

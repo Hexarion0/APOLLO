@@ -156,11 +156,21 @@ class ExecuteCommandTool(BaseTool):
             proc.kill()
             raise TimeoutError(f"Command execution timed out after {timeout_seconds}s")
 
+        stdout_str = stdout_bytes.decode("utf-8", errors="replace")
+        stderr_str = stderr_bytes.decode("utf-8", errors="replace")
+
+        max_len = 4000
+        def _truncate(text: str) -> str:
+            if len(text) > max_len:
+                omitted = len(text) - max_len
+                return text[:2000] + f"\n\n[... {omitted} characters omitted ...]\n\n" + text[-2000:]
+            return text
+
         return {
             "command": command,
             "exit_code": proc.returncode,
-            "stdout": stdout_bytes.decode("utf-8", errors="replace"),
-            "stderr": stderr_bytes.decode("utf-8", errors="replace"),
+            "stdout": _truncate(stdout_str),
+            "stderr": _truncate(stderr_str),
         }
 
 class StoreMemoryTool(BaseTool):

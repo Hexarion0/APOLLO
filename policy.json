@@ -16,7 +16,7 @@
     "import_memory": "logged",
     "store_memory": "logged",
     "write_file": "logged",
-    "execute_command": "logged",
+    "execute_command": "confirm",
     "list_directory": "auto",
     "schedule_task": "logged",
     "list_tasks": "auto",
@@ -25,6 +25,12 @@
     "fetch_url": "logged",
     "download_file": "logged",
     "get_weather": "auto",
-    "analyze_image": "auto"
+    "analyze_image": "auto",
+    "take_screenshot": "logged",
+    "media_control": "auto",
+    "system_power": "confirm",
+    "set_reminder": "logged",
+    "list_reminders": "auto",
+    "cancel_reminder": "auto"
   }
 }

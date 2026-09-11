@@ -12,10 +12,14 @@ env/
 venv/
 ENV/
 
-# Data & Audit
+# Data & Logs
+logs/
+data/
 apollo.db
 audit.log
+chat.log
 *.log
+*.db
 
 # IDE & OS
 .vscode/

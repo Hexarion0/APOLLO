@@ -30,13 +30,30 @@ from typing import Any, Dict, Optional
 
 
 class ChatFileLogger:
-    """Thread-safe append-only flat-file conversation logger."""
+    """Thread-safe append-only flat-file conversation logger with automatic size rotation."""
 
-    def __init__(self, log_path: Path) -> None:
+    def __init__(self, log_path: Path, max_bytes: int = 5 * 1024 * 1024, backup_count: int = 2) -> None:
         self.log_path = Path(log_path)
+        self.max_bytes = max_bytes
+        self.backup_count = backup_count
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._write_session_marker("SESSION START")
+
+    def _rotate_if_needed(self) -> None:
+        if not self.log_path.exists():
+            return
+        try:
+            if self.log_path.stat().st_size >= self.max_bytes:
+                for i in range(self.backup_count - 1, 0, -1):
+                    src = self.log_path.with_name(f"{self.log_path.name}.{i}")
+                    dst = self.log_path.with_name(f"{self.log_path.name}.{i+1}")
+                    if src.exists():
+                        src.replace(dst)
+                first_backup = self.log_path.with_name(f"{self.log_path.name}.1")
+                self.log_path.replace(first_backup)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Public API
@@ -77,6 +94,7 @@ class ChatFileLogger:
         lines = [f"\n[{ts}] {label}", body.strip(), ""]
         entry = "\n".join(lines) + "\n"
         with self._lock:
+            self._rotate_if_needed()
             with open(self.log_path, "a", encoding="utf-8") as f:
                 f.write(entry)
 
@@ -84,5 +102,6 @@ class ChatFileLogger:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
         marker = f"\n{'═' * 20} [{kind}] {now} {'═' * 20}\n"
         with self._lock:
+            self._rotate_if_needed()
             with open(self.log_path, "a", encoding="utf-8") as f:
                 f.write(marker)

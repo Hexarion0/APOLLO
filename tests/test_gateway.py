@@ -186,3 +186,20 @@ async def test_gateway_startup_notification(tmp_path: Path):
     assert "APOLLO Online" in channel.sent_messages[0]
     await gateway.stop()
 
+def test_gateway_compact_context():
+    config = Config()
+    gateway = ApolloGateway(config=config, provider=MockLLMProvider([]))
+    msgs = [
+        ChatMessage(role="system", content="System instruction"),
+        ChatMessage(role="user", content="Turn 1: " + "a" * 500),
+        ChatMessage(role="assistant", content="Turn 1 reply: " + "b" * 500),
+        ChatMessage(role="user", content="Turn 2: " + "c" * 200),
+        ChatMessage(role="assistant", content="Turn 2 reply: " + "d" * 200),
+    ]
+    # Restrict budget so Turn 1 is dropped and compacted
+    compacted = gateway._compact_context(msgs, max_total_chars=600)
+    assert len(compacted) < len(msgs)
+    assert compacted[0].role == "system"
+    assert "compacted" in compacted[1].content.lower()
+    assert "Turn 2 reply" in compacted[-1].content
+

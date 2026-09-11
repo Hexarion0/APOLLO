@@ -41,8 +41,8 @@
   "paths": {
     "//_comment": "File Paths for Policy, Audit Log, Chat Log, and Memory Database",
     "policy_file": "policy.json",
-    "audit_log_file": "audit.log",
-    "chat_log_file": "chat.log",
-    "database_path": "apollo.db"
+    "audit_log_file": "logs/audit.log",
+    "chat_log_file": "logs/chat.log",
+    "database_path": "data/apollo.db"
   }
 }

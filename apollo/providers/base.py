@@ -47,6 +47,7 @@ class LLMResponse:
     raw_response: Optional[Any] = None
     model_used: Optional[str] = None
     was_fallback: bool = False
+    thinking: Optional[str] = None  # Extracted <think>…</think> reasoning content
 
 class BaseLLMProvider(ABC):
     """Abstract interface for LLM providers (NVIDIA NIM, Anthropic, OpenAI, Ollama, etc.)."""

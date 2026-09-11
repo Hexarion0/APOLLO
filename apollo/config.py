@@ -53,9 +53,9 @@ class Config:
     proactive: ProactiveConfig = field(default_factory=ProactiveConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     policy_file: Path = Path("policy.json")
-    audit_log_file: Path = Path("audit.log")
-    chat_log_file: Path = Path("chat.log")
-    database_path: Path = Path("apollo.db")
+    audit_log_file: Path = Path("logs/audit.log")
+    chat_log_file: Path = Path("logs/chat.log")
+    database_path: Path = Path("data/apollo.db")
     persona_file: Path = Path("persona.txt")
     proactive_enabled: bool = True
     proactive_interval_hours: int = 4

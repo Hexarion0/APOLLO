@@ -8,6 +8,30 @@ from apollo.providers.base import BaseLLMProvider, ChatMessage, LLMResponse, Too
 
 logger = logging.getLogger("apollo.providers.nvidia")
 
+import re as _re
+
+def _extract_thinking(text: str) -> tuple[str, Optional[str]]:
+    """Strip <think>…</think> blocks from text, returning (clean_text, thinking_content).
+
+    Handles:
+    - <think>…</think> (DeepSeek-R1, Qwen3, Nemotron reasoning models)
+    - Multiple think blocks are concatenated with newlines.
+    - Remaining text is stripped of leading/trailing whitespace.
+    """
+    if not text or not _re.search(r"<think>", text, flags=_re.IGNORECASE):
+        return text, None
+
+    thinking_parts: List[str] = []
+
+    def _replace(m: _re.Match) -> str:
+        thinking_parts.append(m.group(1).strip())
+        return ""
+
+    clean = _re.sub(r"<think>(.*?)</think>", _replace, text, flags=_re.DOTALL | _re.IGNORECASE)
+    clean = clean.strip()
+    thinking = "\n\n".join(thinking_parts) if thinking_parts else None
+    return clean, thinking
+
 def _has_visual_content(messages: List[Dict[str, Any]]) -> bool:
     for msg in messages:
         content = msg.get("content")
@@ -147,12 +171,14 @@ class NvidiaNIMProvider(BaseLLMProvider):
                                 )
 
                             full_content = "".join(accumulated_content) if accumulated_content else None
+                            clean_content, thinking = _extract_thinking(full_content or "")
                             return LLMResponse(
-                                content=full_content,
+                                content=clean_content or None,
                                 tool_calls=parsed_tool_calls,
                                 finish_reason=finish_reason,
                                 model_used=model_name,
                                 was_fallback=(model_name != self.model),
+                                thinking=thinking,
                             )
                         else:
                             response = await self.client.chat.completions.create(**kwargs, timeout=90.0)
@@ -176,13 +202,15 @@ class NvidiaNIMProvider(BaseLLMProvider):
                                         )
                                     )
 
+                            clean_content, thinking = _extract_thinking(message.content or "")
                             return LLMResponse(
-                                content=message.content,
+                                content=clean_content or None,
                                 tool_calls=parsed_tool_calls,
                                 finish_reason=choice.finish_reason,
                                 raw_response=response,
                                 model_used=model_name,
                                 was_fallback=(model_name != self.model),
+                                thinking=thinking,
                             )
 
                     except Exception as err:

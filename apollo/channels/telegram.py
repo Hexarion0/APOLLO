@@ -24,6 +24,124 @@ logger = logging.getLogger("apollo.channels.telegram")
 
 
 # ---------------------------------------------------------------------------
+# Tool status display: emoji map and live-progress helpers
+# ---------------------------------------------------------------------------
+
+# Per-tool emoji shown in the live status block
+_TOOL_EMOJI: Dict[str, str] = {
+    "execute_command":   "⚙️",
+    "read_file":         "📄",
+    "write_file":        "✏️",
+    "list_directory":    "📁",
+    "web_search":        "🌐",
+    "fetch_url":         "🌐",
+    "download_file":     "⬇️",
+    "get_weather":       "🌤️",
+    "git_status":        "🔀",
+    "git_diff":          "🔀",
+    "store_memory":      "🧠",
+    "recall_memory":     "🧠",
+    "import_memory":     "🧠",
+    "analyze_image":     "🔍",
+    "schedule_task":     "⏰",
+    "list_tasks":        "⏰",
+    "cancel_task":       "⏰",
+    "get_system_info":   "💻",
+    "get_current_time":  "🕐",
+    "take_screenshot":   "📸",
+    "media_control":     "🎵",
+    "system_power":      "⚡",
+    "set_reminder":      "🔔",
+    "list_reminders":    "🔔",
+    "cancel_reminder":   "🔔",
+}
+_DEFAULT_TOOL_EMOJI = "🔧"
+
+def _tool_emoji(tool_name: str) -> str:
+    return _TOOL_EMOJI.get(tool_name, _DEFAULT_TOOL_EMOJI)
+
+def _tool_label(tool_name: str) -> str:
+    """Human-readable tool label for display."""
+    return tool_name.replace("_", " ").title()
+
+def _format_arg_preview(tool_name: str, args: Dict[str, Any]) -> str:
+    """Short single-line preview of the most relevant argument for a tool call."""
+    preview_keys = {
+        "execute_command": "command",
+        "read_file": "file_path",
+        "write_file": "file_path",
+        "list_directory": "path",
+        "web_search": "query",
+        "fetch_url": "url",
+        "download_file": "url",
+        "get_weather": "location",
+        "git_diff": "path",
+        "store_memory": "key",
+        "recall_memory": "query",
+        "analyze_image": "image_path",
+        "schedule_task": "name",
+        "cancel_task": "task_id",
+        "take_screenshot": "region",
+        "media_control": "action",
+        "system_power": "action",
+        "set_reminder": "text",
+        "cancel_reminder": "reminder_id",
+    }
+    key = preview_keys.get(tool_name)
+    if key and key in args:
+        val = str(args[key])
+        # Trim long values
+        if len(val) > 60:
+            val = val[:57] + "…"
+        return f" — <code>{html_lib.escape(val)}</code>"
+    return ""
+
+def _build_status_block(
+    tool_lines: List[Dict[str, Any]],
+    header: str = "🤔 <i>Processing your request…</i>",
+) -> str:
+    """Build a formatted HTML status block for the Telegram placeholder."""
+    parts = [header]
+    for entry in tool_lines:
+        status = entry["status"]
+        name = entry["name"]
+        args = entry["args"]
+        emoji = _tool_emoji(name)
+        label = _tool_label(name)
+        preview = _format_arg_preview(name, args)
+        if status == "running":
+            line = f"{emoji} <b>Running:</b> {html_lib.escape(label)}{preview}"
+        elif status == "done":
+            line = f"✅ {html_lib.escape(label)}{preview}"
+        elif status == "failed":
+            line = f"❌ {html_lib.escape(label)}{preview}"
+        elif status == "denied":
+            line = f"🚫 {html_lib.escape(label)} <i>(denied)</i>"
+        else:
+            line = f"{emoji} {html_lib.escape(label)}{preview}"
+        parts.append(line)
+    return "\n".join(parts)
+
+# Sentinel delimiters used by gateway to carry thinking content
+_THINK_START = "\x00THINK\x00"
+_THINK_END   = "\x00ENDTHINK\x00"
+
+def _split_thinking(response: str) -> tuple[Optional[str], str]:
+    """Extract thinking content and clean reply from a gateway response string."""
+    if response.startswith(_THINK_START) and _THINK_END in response:
+        end_idx = response.index(_THINK_END)
+        thinking = response[len(_THINK_START):end_idx]
+        reply = response[end_idx + len(_THINK_END):]
+        return thinking.strip() or None, reply
+    return None, response
+
+def _render_thinking_spoiler(thinking: str) -> str:
+    """Wrap thinking content in a collapsed Telegram spoiler block."""
+    escaped = html_lib.escape(thinking)
+    return f'<blockquote expandable>💭 <b>Reasoning</b>\n\n{escaped}</blockquote>'
+
+
+# ---------------------------------------------------------------------------
 # Markdown → Telegram HTML converter
 # ---------------------------------------------------------------------------
 
@@ -617,6 +735,34 @@ class TelegramChannel(BaseChannel):
                     except Exception:
                         pass
 
+        # Live-progress tracking: list of {name, status, args} dicts
+        tool_status_lines: List[Dict[str, Any]] = []
+        last_status_edit: float = 0.0
+
+        async def _on_tool_status(tool_name: str, status: str, args: Dict[str, Any]) -> None:
+            nonlocal last_status_edit
+            # Update or append status line for this tool
+            found = False
+            for entry in tool_status_lines:
+                if entry["name"] == tool_name and entry["status"] == "running":
+                    entry["status"] = status
+                    found = True
+                    break
+            if not found:
+                tool_status_lines.append({"name": tool_name, "status": status, "args": args})
+
+            if not placeholder:
+                return
+            # Throttle edits to avoid Telegram rate limits (max every 0.8s)
+            now = asyncio.get_event_loop().time()
+            if now - last_status_edit >= 0.8:
+                last_status_edit = now
+                status_html = _build_status_block(tool_status_lines)
+                try:
+                    await placeholder.edit_text(status_html, parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
+
         try:
             sig = inspect.signature(self.message_handler_callback)
             call_kwargs: Dict[str, Any] = {}
@@ -624,28 +770,81 @@ class TelegramChannel(BaseChannel):
                 call_kwargs["on_token"] = _on_token
             if "images" in sig.parameters and images:
                 call_kwargs["images"] = images
+            if "on_tool_status" in sig.parameters:
+                call_kwargs["on_tool_status"] = _on_tool_status
 
-            response = await self.message_handler_callback(str(sender_id), user_text, **call_kwargs)
+            raw_response = await self.message_handler_callback(str(sender_id), user_text, **call_kwargs)
+
+            # --- Parse thinking sentinel and build final message ---
+            thinking, response = _split_thinking(raw_response or "")
+            spoiler_html = _render_thinking_spoiler(thinking) if thinking else None
 
             if response and placeholder:
                 chunks = _chunk_text(response)
-                if chunks:
+                first_chunk_html = _md_to_html(chunks[0]) if chunks else ""
+
+                if spoiler_html:
+                    combined_html = f"{spoiler_html}\n\n{first_chunk_html}".strip()
+                    if len(combined_html) <= 4000:
+                        # Unified single-bubble rendering with expandable reasoning blockquote
+                        try:
+                            await placeholder.edit_text(combined_html, parse_mode=ParseMode.HTML)
+                        except Exception:
+                            try:
+                                await placeholder.edit_text(chunks[0])
+                            except Exception:
+                                pass
+                    else:
+                        # Exceeds single message limit: send thinking first, then reply
+                        try:
+                            await update.message.chat.send_message(spoiler_html, parse_mode=ParseMode.HTML)
+                        except Exception:
+                            pass
+                        try:
+                            await placeholder.edit_text(first_chunk_html, parse_mode=ParseMode.HTML)
+                        except Exception:
+                            try:
+                                await placeholder.edit_text(chunks[0])
+                            except Exception:
+                                pass
+                else:
                     try:
-                        await placeholder.edit_text(_md_to_html(chunks[0]), parse_mode=ParseMode.HTML)
+                        await placeholder.edit_text(first_chunk_html, parse_mode=ParseMode.HTML)
                     except Exception:
                         try:
                             await placeholder.edit_text(chunks[0])
                         except Exception:
                             pass
 
-                    for follow_up in chunks[1:]:
-                        html_chunk = _md_to_html(follow_up)
-                        try:
-                            await update.message.chat.send_message(html_chunk, parse_mode=ParseMode.HTML)
-                        except Exception:
-                            await update.message.chat.send_message(follow_up)
+                for follow_up in chunks[1:]:
+                    html_chunk = _md_to_html(follow_up)
+                    try:
+                        await update.message.chat.send_message(html_chunk, parse_mode=ParseMode.HTML)
+                    except Exception:
+                        await update.message.chat.send_message(follow_up)
+
             elif response:
-                await _reply_html(update.message, response)
+                if spoiler_html:
+                    combined_html = f"{spoiler_html}\n\n{_md_to_html(response)}".strip()
+                    if len(combined_html) <= 4000:
+                        await update.message.reply_text(combined_html, parse_mode=ParseMode.HTML)
+                    else:
+                        await update.message.reply_text(spoiler_html, parse_mode=ParseMode.HTML)
+                        await _reply_html(update.message, response)
+                else:
+                    await _reply_html(update.message, response)
+
+            elif placeholder:
+                if spoiler_html:
+                    try:
+                        await placeholder.edit_text(spoiler_html, parse_mode=ParseMode.HTML)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        await placeholder.delete()
+                    except Exception:
+                        pass
 
         except asyncio.CancelledError:
             logger.info(f"Task for sender {sender_id} cancelled.")
@@ -691,13 +890,34 @@ class TelegramChannel(BaseChannel):
             self.active_tasks.pop(sender_key, None)
 
 
-
     async def send_message(self, recipient_id: str, text: str) -> None:
         if not self.app or not self.app.bot:
             logger.error("Cannot send Telegram message: Bot not initialized.")
             return
 
         await _send_html(self.app.bot, int(recipient_id), text)
+
+    async def send_photo(self, recipient_id: str, photo_path: str, caption: Optional[str] = None) -> None:
+        """Send a photo to the Telegram owner directly."""
+        if not self.app or not self.app.bot:
+            logger.error("Cannot send Telegram photo: Bot not initialized.")
+            return
+
+        try:
+            path_obj = Path(photo_path).expanduser().resolve()
+            if not path_obj.exists() or not path_obj.is_file():
+                logger.error(f"Cannot send photo: File does not exist at {path_obj}")
+                return
+
+            with open(path_obj, "rb") as photo_file:
+                await self.app.bot.send_photo(
+                    chat_id=int(recipient_id),
+                    photo=photo_file,
+                    caption=caption or "",
+                )
+            logger.info(f"Sent photo {path_obj} to owner {recipient_id}")
+        except Exception as e:
+            logger.error(f"Failed to send Telegram photo: {e}")
 
     async def request_confirmation(
         self,
