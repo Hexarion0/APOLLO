@@ -288,6 +288,37 @@ class TestScreenCaptureWithChannel:
                         caption="🖥️ Screen Capture (fullscreen) — 0.0 KB",
                     )
 
+    @pytest.mark.asyncio
+    async def test_screenshot_uploads_with_channel_getter(self):
+        with tempfile.TemporaryDirectory() as td:
+            mock_channel = MagicMock()
+            mock_channel.send_photo = AsyncMock()
+
+            holder = {"channel": None}
+            tool = TakeScreenshotTool(
+                channel_getter=lambda: holder["channel"],
+                owner_id="12345",
+            )
+            # Channel is attached AFTER tool creation (like in main.py)
+            holder["channel"] = mock_channel
+
+            output_file = Path(td) / "test_screen.png"
+            output_file.write_bytes(b"PNGDATA")
+
+            with patch.object(tool, "_which", new_callable=AsyncMock, return_value="/usr/bin/grim"):
+                with patch("asyncio.create_subprocess_exec") as mock_exec:
+                    mock_proc = MagicMock()
+                    mock_proc.returncode = 0
+                    mock_proc.communicate = AsyncMock(return_value=(b"", b""))
+                    mock_exec.return_value = mock_proc
+
+                    result = await tool.execute(output_path=str(output_file), upload=True)
+
+                    assert "Screenshot Captured" in result
+                    assert "Uploaded directly" in result
+                    mock_channel.send_photo.assert_called_once()
+
+
 
 # ---------------------------------------------------------------------------
 # Policy Tier Validation Tests

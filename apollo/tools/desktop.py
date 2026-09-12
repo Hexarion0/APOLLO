@@ -69,9 +69,37 @@ class TakeScreenshotTool(BaseTool):
         self,
         channel: Optional[BaseChannel] = None,
         owner_id: Optional[str] = None,
+        channel_getter: Optional[Any] = None,
+        owner_id_getter: Optional[Any] = None,
     ):
-        self.channel = channel
-        self.owner_id = owner_id
+        self._channel = channel
+        self._owner_id = owner_id
+        self._channel_getter = channel_getter
+        self._owner_id_getter = owner_id_getter
+
+    @property
+    def channel(self) -> Optional[BaseChannel]:
+        if self._channel_getter is not None:
+            c = self._channel_getter()
+            if c is not None:
+                return c
+        return self._channel
+
+    @channel.setter
+    def channel(self, val: Optional[BaseChannel]) -> None:
+        self._channel = val
+
+    @property
+    def owner_id(self) -> Optional[str]:
+        if self._owner_id_getter is not None:
+            oid = self._owner_id_getter()
+            if oid is not None:
+                return oid
+        return self._owner_id
+
+    @owner_id.setter
+    def owner_id(self, val: Optional[str]) -> None:
+        self._owner_id = val
 
     async def execute(
         self,
@@ -91,16 +119,22 @@ class TakeScreenshotTool(BaseTool):
                     f"Path: `{save_path}`\n"
                     f"Size: `{size_kb:.1f} KB` | Region: `{region}`"
                 )
-                if upload and self.channel and self.owner_id:
-                    try:
-                        await self.channel.send_photo(
-                            recipient_id=str(self.owner_id),
-                            photo_path=str(save_path),
-                            caption=f"🖥️ Screen Capture ({region}) — {size_kb:.1f} KB",
-                        )
-                        msg += "\n*Uploaded directly to Telegram chat.*"
-                    except Exception as e:
-                        logger.warning(f"Could not upload screenshot to channel: {e}")
+                if upload:
+                    ch = self.channel
+                    oid = self.owner_id
+                    if ch and oid:
+                        try:
+                            await ch.send_photo(
+                                recipient_id=str(oid),
+                                photo_path=str(save_path),
+                                caption=f"🖥️ Screen Capture ({region}) — {size_kb:.1f} KB",
+                            )
+                            msg += "\n*Uploaded directly to Telegram chat.*"
+                        except Exception as e:
+                            logger.warning(f"Could not upload screenshot to channel: {e}")
+                            msg += f"\n*(Failed to upload image to Telegram chat: {e})*"
+                    else:
+                        msg += "\n*(Note: Telegram photo upload skipped — channel or owner_id not configured on tool)*"
                 return msg
             else:
                 # Bridge responded but reported an error
@@ -152,16 +186,22 @@ class TakeScreenshotTool(BaseTool):
                 f"Size: `{size_kb:.1f} KB` | Region: `{region}`"
             )
 
-            if upload and self.channel and self.owner_id:
-                try:
-                    await self.channel.send_photo(
-                        recipient_id=str(self.owner_id),
-                        photo_path=str(save_path),
-                        caption=f"🖥️ Screen Capture ({region}) — {size_kb:.1f} KB",
-                    )
-                    msg += "\n*Uploaded directly to Telegram chat.*"
-                except Exception as e:
-                    logger.warning(f"Could not upload screenshot to channel: {e}")
+            if upload:
+                ch = self.channel
+                oid = self.owner_id
+                if ch and oid:
+                    try:
+                        await ch.send_photo(
+                            recipient_id=str(oid),
+                            photo_path=str(save_path),
+                            caption=f"🖥️ Screen Capture ({region}) — {size_kb:.1f} KB",
+                        )
+                        msg += "\n*Uploaded directly to Telegram chat.*"
+                    except Exception as e:
+                        logger.warning(f"Could not upload screenshot to channel: {e}")
+                        msg += f"\n*(Failed to upload image to Telegram chat: {e})*"
+                else:
+                    msg += "\n*(Note: Telegram photo upload skipped — channel or owner_id not configured on tool)*"
 
             return msg
 

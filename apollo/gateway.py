@@ -124,6 +124,8 @@ class ApolloGateway:
             TakeScreenshotTool(
                 channel=self.channel,
                 owner_id=str(self.config.telegram.owner_id) if self.config.telegram.owner_id else None,
+                channel_getter=lambda: self.channel,
+                owner_id_getter=lambda: str(self.config.telegram.owner_id) if self.config.telegram.owner_id else None,
             )
         )
         self.tools.register(MediaControlTool())
@@ -150,6 +152,12 @@ class ApolloGateway:
             logger.info(f"Registered Proactive Persona engine (interval={self.config.proactive_interval_hours}h).")
 
         if self.channel:
+            screenshot_tool = self.tools.get("take_screenshot")
+            if screenshot_tool and isinstance(screenshot_tool, TakeScreenshotTool):
+                screenshot_tool.channel = self.channel
+                if self.config.telegram.owner_id:
+                    screenshot_tool.owner_id = str(self.config.telegram.owner_id)
+
             await self.channel.start()
             if self.config.gateway.startup_notification and self.config.telegram.owner_id:
                 try:
