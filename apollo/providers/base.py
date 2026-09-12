@@ -60,8 +60,19 @@ class BaseLLMProvider(ABC):
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
         on_token: Optional[Callable[[str], Awaitable[None]]] = None,
+        model: Optional[str] = None,
     ) -> LLMResponse:
-        """Generate a response from the LLM provider given conversation history and tools."""
+        """Generate a response from the LLM provider given conversation history and tools.
+
+        Args:
+            messages: The conversation history.
+            tools: Optional list of OpenAI-schema tool definitions.
+            temperature: Sampling temperature.
+            max_tokens: Max tokens to generate.
+            on_token: Async streaming callback called per token.
+            model: Optional model override (e.g. from ComplexityRouter). If None, the
+                   provider selects based on its own configuration.
+        """
         pass
 
     async def analyze_image(

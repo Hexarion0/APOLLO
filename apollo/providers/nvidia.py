@@ -83,6 +83,7 @@ class NvidiaNIMProvider(BaseLLMProvider):
         temperature: float = 0.7,
         max_tokens: Optional[int] = 1024,
         on_token: Optional[Callable[[str], Awaitable[None]]] = None,
+        model: Optional[str] = None,
     ) -> LLMResponse:
         formatted_messages = [msg.to_dict() for msg in messages]
 
@@ -96,6 +97,10 @@ class NvidiaNIMProvider(BaseLLMProvider):
                     candidate_models.append(m)
         else:
             candidate_models = [self.model] + [m for m in self.fallback_models if m != self.model]
+
+        # If ComplexityRouter (or caller) specified an explicit model override, promote it to first
+        if model and not has_vision:
+            candidate_models = [model] + [m for m in candidate_models if m != model]
 
         last_exception = None
 

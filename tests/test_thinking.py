@@ -145,7 +145,7 @@ class SimpleProvider:
     def __init__(self):
         self.call_count = 0
 
-    async def generate_response(self, messages, tools=None, temperature=0.7, max_tokens=None, on_token=None):
+    async def generate_response(self, messages, tools=None, temperature=0.7, max_tokens=None, on_token=None, model=None):
         from apollo.providers.base import LLMResponse, ToolCall
         self.call_count += 1
         if self.call_count == 1:

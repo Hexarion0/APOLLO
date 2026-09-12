@@ -17,7 +17,7 @@ class DummyProvider(BaseLLMProvider):
         self.reply_text = reply_text
         self.last_messages = []
 
-    async def generate_response(self, messages, tools=None, temperature=0.7, max_tokens=None, on_token=None):
+    async def generate_response(self, messages, tools=None, temperature=0.7, max_tokens=None, on_token=None, model=None):
         self.last_messages = messages
         return LLMResponse(content=self.reply_text)
 

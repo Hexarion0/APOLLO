@@ -13,6 +13,7 @@ from apollo.memory.store import SQLiteMemoryStore
 from apollo.policy import PermissionTier, PolicyEngine
 from apollo.providers.base import BaseLLMProvider, ChatMessage, ToolCall
 from apollo.providers.nvidia import NvidiaNIMProvider
+from apollo.providers.router import ComplexityRouter
 from apollo.scheduler.cron import BackgroundScheduler
 from apollo.tools.builtins import (
     CancelTaskTool,
@@ -69,6 +70,9 @@ class ApolloGateway:
             )
 
         self.channel = channel
+
+        # Adaptive model router (zero-overhead heuristic tier classifier)
+        self.router = ComplexityRouter(config=self.config.provider)
 
         # Scheduler
         self.scheduler = BackgroundScheduler(
@@ -273,6 +277,17 @@ class ApolloGateway:
             return self.channel.cancel_active_task(sender_id)
         return False
 
+    def _select_model(self, user_message: str):
+        """Use ComplexityRouter to pick the best model tier for this message.
+
+        Returns:
+            (model_name: str, cleaned_prompt: str)  — prompt is stripped of tier override prefixes.
+        """
+        from apollo.providers.router import ModelTier
+        tier, cleaned = self.router.classify(user_message)
+        model = self.router.get_model_for_prompt(user_message)
+        return model, cleaned
+
     async def process_message(
         self,
         sender_id: str,
@@ -326,6 +341,10 @@ class ApolloGateway:
 
         tool_schemas = self.tools.get_openai_schemas()
 
+        # Classify prompt complexity and select appropriate model tier
+        selected_model, cleaned_user_message = self._select_model(user_message)
+        logger.debug(f"Model router selected: {selected_model} for prompt (len={len(user_message)})")
+
         # Accumulate all thinking blocks across turns
         all_thinking: List[str] = []
 
@@ -344,12 +363,14 @@ class ApolloGateway:
                         messages=messages,
                         tools=tool_schemas,
                         on_token=on_token,
+                        model=selected_model,
                     )
                 except TypeError as te:
                     if "on_token" in str(te):
                         response = await self.provider.generate_response(
                             messages=messages,
                             tools=tool_schemas,
+                            model=selected_model,
                         )
                     else:
                         raise te

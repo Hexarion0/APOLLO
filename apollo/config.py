@@ -18,7 +18,10 @@ class LoggingConfig:
 class ProviderConfig:
     api_key: str = ""
     base_url: str = "https://integrate.api.nvidia.com/v1"
-    model: str = "nvidia/nemotron-3-ultra-550b-a55b"
+    model: str = "nvidia/nemotron-4-340b-instruct"
+    model_fast: str = "nvidia/nemotron-3-super-120b-a12b"
+    model_balanced: str = "nvidia/nemotron-4-340b-instruct"
+    model_complex: str = "nvidia/nemotron-3-ultra-550b-a55b"
     fallback_models: List[str] = field(default_factory=lambda: ["nvidia/nemotron-3-super-120b-a12b", "nvidia/nemotron-4-340b-instruct", "nvidia/neva-22b"])
     vision_model: str = "nvidia/neva-22b"
     temperature: float = 0.7
