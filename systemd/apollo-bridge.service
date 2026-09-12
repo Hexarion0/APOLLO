@@ -1,0 +1,26 @@
+[Unit]
+Description=APOLLO Session Bridge — Wayland/desktop tool proxy
+Documentation=https://github.com/Hexarion0/APOLLO
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+# Run the bridge server from the project directory
+WorkingDirectory=%h/APOLLO
+ExecStart=%h/APOLLO/.venv/bin/python -m apollo.bridge.server
+Restart=on-failure
+RestartSec=5s
+
+# Inherit the full user environment (WAYLAND_DISPLAY, XDG_RUNTIME_DIR, DBUS_SESSION_BUS_ADDRESS)
+Environment=PYTHONUNBUFFERED=1
+# Optional: set a shared secret token (also set in apollo's config.json or .env)
+# Environment=APOLLO_BRIDGE_TOKEN=your_secret_here
+# Environment=APOLLO_BRIDGE_PORT=7734
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=apollo-bridge
+
+[Install]
+WantedBy=graphical-session.target

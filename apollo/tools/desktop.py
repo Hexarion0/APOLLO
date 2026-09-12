@@ -5,6 +5,10 @@ Tools:
   - TakeScreenshotTool : Capture screenshots via grim/grimblast (Wayland/Hyprland) with direct upload support.
   - MediaControlTool   : Control media & Spotify playback via playerctl and system volume via wpctl.
   - SystemPowerTool    : Workstation lock, display sleep, suspend, reboot, and power control.
+
+When running as a headless systemd service (no Wayland socket), tools automatically
+delegate to the apollo-bridge user-session companion process over localhost HTTP.
+If the bridge is unavailable they fall back to direct execution (for session-local use).
 """
 
 import asyncio
@@ -15,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from apollo.bridge.client import get_client as _get_bridge
 from apollo.channels.base import BaseChannel
 from apollo.tools.base import BaseTool
 
@@ -74,7 +79,34 @@ class TakeScreenshotTool(BaseTool):
         output_path: Optional[str] = None,
         upload: bool = True,
     ) -> str:
-        # Determine output file path
+        # ── Try bridge first (works from headless systemd service) ──────────
+        bridge = _get_bridge()
+        if await bridge.is_available():
+            result = await bridge.screenshot(region=region)
+            if result.get("ok"):
+                save_path = Path(result["path"])
+                size_kb = result.get("size_kb", save_path.stat().st_size / 1024 if save_path.exists() else 0)
+                msg = (
+                    f"📸 **Screenshot Captured** *(via session bridge)*\n"
+                    f"Path: `{save_path}`\n"
+                    f"Size: `{size_kb:.1f} KB` | Region: `{region}`"
+                )
+                if upload and self.channel and self.owner_id:
+                    try:
+                        await self.channel.send_photo(
+                            recipient_id=str(self.owner_id),
+                            photo_path=str(save_path),
+                            caption=f"🖥️ Screen Capture ({region}) — {size_kb:.1f} KB",
+                        )
+                        msg += "\n*Uploaded directly to Telegram chat.*"
+                    except Exception as e:
+                        logger.warning(f"Could not upload screenshot to channel: {e}")
+                return msg
+            else:
+                # Bridge responded but reported an error
+                return f"❌ Screenshot failed: {result.get('error', 'Unknown bridge error')}"
+
+        # ── Fallback: direct grim/grimblast (only works in user session) ────
         if output_path:
             save_path = Path(output_path).expanduser().resolve()
         else:
@@ -84,7 +116,6 @@ class TakeScreenshotTool(BaseTool):
 
         save_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Try grimblast first (Hyprland-specific, supports active window)
         grimblast = await self._which("grimblast")
         grim = await self._which("grim")
 
@@ -94,8 +125,9 @@ class TakeScreenshotTool(BaseTool):
             cmd = await self._build_grim_cmd(region, str(save_path))
         else:
             return (
-                "Error: Neither 'grimblast' nor 'grim' found. "
-                "Install with: sudo pacman -S grim grimblast-git"
+                "❌ Bridge unavailable and neither 'grimblast' nor 'grim' found.\n"
+                "Make sure apollo-bridge is running in your Hyprland session:\n"
+                "`systemctl --user start apollo-bridge`"
             )
 
         try:
@@ -120,7 +152,6 @@ class TakeScreenshotTool(BaseTool):
                 f"Size: `{size_kb:.1f} KB` | Region: `{region}`"
             )
 
-            # Upload photo to Telegram channel if available
             if upload and self.channel and self.owner_id:
                 try:
                     await self.channel.send_photo(
@@ -139,6 +170,7 @@ class TakeScreenshotTool(BaseTool):
         except Exception as e:
             logger.error(f"Screenshot capture error: {e}")
             return f"Error capturing screenshot: {e}"
+
 
     async def _which(self, binary: str) -> Optional[str]:
         """Check if a binary exists in PATH."""
@@ -241,12 +273,104 @@ class MediaControlTool(BaseTool):
     ) -> str:
         action = action.strip().lower()
 
+        # ── Try bridge first ────────────────────────────────────────────────
+        bridge = _get_bridge()
+        if await bridge.is_available():
+            result = await bridge.media(action=action, value=value, player=player)
+            if "error" in result:
+                return f"❌ Media bridge error: {result['error']}"
+            return self._format_bridge_media_result(action, result)
+
+        # ── Fallback: direct calls (works in user session) ──────────────────
         # Volume actions via wpctl
         if action.startswith("volume") or action in ("mute", "unmute", "mute-toggle"):
             return await self._handle_volume(action, value)
 
         # Media & Spotify actions via playerctl
         return await self._handle_media(action, value, player)
+
+    def _format_bridge_media_result(self, action: str, data: dict) -> str:
+        """Format a bridge media response into a human-readable string."""
+        if action == "status":
+            status = data.get("status", "")
+            title = data.get("title", "Unknown Track")
+            artist = data.get("artist", "Unknown Artist")
+            album = data.get("album", "")
+            shuffle = data.get("shuffle", "")
+            loop = data.get("loop", "")
+
+            try:
+                pos_sec = float(data.get("position", 0) or 0)
+                len_us = float(data.get("length", 0) or 0)
+                len_sec = len_us / 1_000_000.0 if len_us > 1000 else len_us
+                if len_sec > 0:
+                    fraction = min(1.0, pos_sec / len_sec)
+                    bar_len = 10
+                    filled = int(round(fraction * bar_len))
+                    bar = "█" * filled + "░" * (bar_len - filled)
+                    pos_fmt = f"{int(pos_sec // 60):02d}:{int(pos_sec % 60):02d}"
+                    len_fmt = f"{int(len_sec // 60):02d}:{int(len_sec % 60):02d}"
+                    progress = f"[{bar}] {pos_fmt} / {len_fmt}"
+                else:
+                    progress = ""
+            except Exception:
+                progress = ""
+
+            status_emoji = "▶️ Playing" if status.lower() == "playing" else "⏸️ Paused" if status.lower() == "paused" else f"⏹️ {status}"
+            lines = [
+                f"🎵 **{title}**",
+                f"👤 **{artist}**" + (f" • *{album}*" if album else ""),
+                f"📊 {status_emoji}" + (f" | `{progress}`" if progress else ""),
+            ]
+            extras = []
+            if shuffle and shuffle != "Off":
+                extras.append(f"🔀 Shuffle: `{shuffle}`")
+            if loop and loop != "None":
+                extras.append(f"🔁 Loop: `{loop}`")
+            if extras:
+                lines.append(" • ".join(extras))
+            return "\n".join(lines)
+
+        elif action in ("play", "pause", "play-pause", "next", "previous", "stop"):
+            title = data.get("title", "")
+            artist = data.get("artist", "")
+            status = data.get("status", "")
+            status_emoji = "▶️ Playing" if status.lower() == "playing" else "⏸️ Paused" if status.lower() == "paused" else f"⏹️ {status}"
+            lines = [f"✅ **Media {action.capitalize()}**"]
+            if title:
+                lines.append(f"🎵 **{title}**" + (f" — {artist}" if artist else ""))
+            lines.append(f"📊 {status_emoji}")
+            return "\n".join(lines)
+
+        elif action == "shuffle":
+            return f"🔀 **Shuffle**: `{data.get('shuffle', 'updated')}`"
+
+        elif action == "loop":
+            return f"🔁 **Loop**: `{data.get('loop', 'updated')}`"
+
+        elif action == "volume-get":
+            return f"🔊 **System Volume**: {data.get('result', 'unknown')}"
+
+        elif action in ("volume-set", "mute-toggle"):
+            result = data.get("result", "")
+            muted = "[MUTED]" in (result or "")
+            if action == "mute-toggle":
+                return f"{'🔇 Muted' if muted else '🔊 Unmuted'}. Volume: `{result or 'unknown'}`"
+            return f"🔊 Volume updated. Current: `{result or 'unknown'}`"
+
+        elif action == "mute":
+            return "🔇 System audio **muted**."
+
+        elif action == "unmute":
+            return "🔊 System audio **unmuted**."
+
+        elif action == "seek":
+            return f"⏩ **Seeked** | Position: `{data.get('position', 'updated')}`"
+
+        elif action == "open":
+            return "🎶 Opened media URI."
+
+        return f"✅ Action `{action}` executed."
 
     async def _handle_media(self, action: str, value: Optional[str], player: Optional[str]) -> str:
         """Handle media playback actions via playerctl."""

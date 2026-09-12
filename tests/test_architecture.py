@@ -297,6 +297,6 @@ class TestDesktopTools:
         tool = TakeScreenshotTool()
         with patch.object(tool, "_which", new_callable=AsyncMock, return_value=None):
             result = await tool.execute(region="fullscreen")
-            assert "error" in result.lower()
+            assert any(kw in result.lower() for kw in ("error", "bridge", "unavailable", "not found"))
             assert "grim" in result.lower()
 
