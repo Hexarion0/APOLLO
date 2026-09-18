@@ -7,6 +7,12 @@ config.local.json
 *.pem
 *.token
 
+# Local Notes & Documentation
+TODO.md
+TODO*.md
+CONFIG_GUIDE.md
+*.todo
+
 # Python
 __pycache__/
 *.py[cod]
