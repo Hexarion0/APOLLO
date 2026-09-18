@@ -16,7 +16,7 @@
     "import_memory": "logged",
     "store_memory": "logged",
     "write_file": "logged",
-    "execute_command": "confirm",
+    "execute_command": "logged",
     "list_directory": "auto",
     "schedule_task": "logged",
     "list_tasks": "auto",
