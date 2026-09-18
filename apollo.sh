@@ -8,4 +8,5 @@ else
     PYTHON_EXEC="python3"
 fi
 
-exec "$PYTHON_EXEC" -m apollo.cli "$@"
+export PYTHONPATH="$SCRIPT_DIR:$PYTHONPATH"
+exec "$PYTHON_EXEC" "$SCRIPT_DIR/apollo/cli.py" "$@"

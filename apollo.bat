@@ -10,5 +10,6 @@ if exist ".venv_win\Scripts\python.exe" (
     set "PYTHON_EXEC=python"
 )
 
-"%PYTHON_EXEC%" -m apollo.cli %*
+set "PYTHONPATH=%~dp0;%PYTHONPATH%"
+"%PYTHON_EXEC%" "%~dp0apollo\cli.py" %*
 endlocal
