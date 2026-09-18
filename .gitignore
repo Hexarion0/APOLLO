@@ -1,28 +1,42 @@
 # Environment and secrets
 .env
 *.env
+.env.*
 config.local.json
+*.key
+*.pem
+*.token
 
 # Python
 __pycache__/
 *.py[cod]
 *$py.class
+*.so
+.Python
+
+# Virtual Environments
 .venv*
 .venv/
 env/
 venv/
 ENV/
 
-# Data & Logs
+# Data, Memory & Logs
 logs/
 data/
-apollo.db
-audit.log
-chat.log
 *.log
 *.db
+*.sqlite
+*.sqlite3
+
+# Testing & Coverage
+.pytest_cache/
+.coverage
+htmlcov/
 
 # IDE & OS
 .vscode/
 .idea/
 .DS_Store
+Thumbs.db
+desktop.ini

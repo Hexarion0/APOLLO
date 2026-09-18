@@ -22,7 +22,7 @@
   "telegram": {
     "//_comment": "Telegram Channel & Owner Authorization. Bot Token is read from .env (TELEGRAM_BOT_TOKEN)",
     "bot_token": "",
-    "owner_id": 6579740425,
+    "owner_id": 0,
     "typing_indicator": true
   },
   "gateway": {

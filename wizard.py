@@ -145,7 +145,7 @@ def step_configure_credentials() -> None:
         env_data["TELEGRAM_BOT_TOKEN"] = tg_val
 
     print(f"\n3. {BOLD}Telegram Owner ID{RESET} (Your personal Telegram User ID, e.g. from @userinfobot)")
-    owner_val = get_input("   Enter TELEGRAM_OWNER_ID", cur_owner or "6579740425")
+    owner_val = get_input("   Enter TELEGRAM_OWNER_ID", cur_owner or "123456789")
     if owner_val:
         env_data["TELEGRAM_OWNER_ID"] = owner_val
 
