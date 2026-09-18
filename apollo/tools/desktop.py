@@ -15,6 +15,7 @@ import asyncio
 import logging
 import os
 import re
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -140,7 +141,7 @@ class TakeScreenshotTool(BaseTool):
                 # Bridge responded but reported an error
                 return f"❌ Screenshot failed: {result.get('error', 'Unknown bridge error')}"
 
-        # ── Fallback: direct grim/grimblast (only works in user session) ────
+        # ── Fallback: direct screenshot capture ────
         if output_path:
             save_path = Path(output_path).expanduser().resolve()
         else:
@@ -149,6 +150,36 @@ class TakeScreenshotTool(BaseTool):
             save_path = SCREENSHOT_DIR / f"screenshot_{timestamp}.png"
 
         save_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if sys.platform == "win32":
+            try:
+                from PIL import ImageGrab
+                img = ImageGrab.grab()
+                img.save(str(save_path))
+                size_kb = save_path.stat().st_size / 1024
+                msg = (
+                    f"📸 **Screenshot Captured** *(Windows)*\n"
+                    f"Path: `{save_path}`\n"
+                    f"Size: `{size_kb:.1f} KB` | Region: `{region}`"
+                )
+                if upload:
+                    ch = self.channel
+                    oid = self.owner_id
+                    if ch and oid:
+                        try:
+                            await ch.send_photo(
+                                recipient_id=str(oid),
+                                photo_path=str(save_path),
+                                caption=f"🖥️ Screen Capture ({region}) — {size_kb:.1f} KB",
+                            )
+                            msg += "\n*Uploaded directly to Telegram chat.*"
+                        except Exception as e:
+                            logger.warning(f"Could not upload screenshot to channel: {e}")
+                            msg += f"\n*(Failed to upload image to Telegram chat: {e})*"
+                return msg
+            except Exception as e:
+                logger.error(f"Windows screenshot capture error: {e}")
+                return f"Error capturing screenshot on Windows: {e}"
 
         grimblast = await self._which("grimblast")
         grim = await self._which("grim")
@@ -657,6 +688,32 @@ class SystemPowerTool(BaseTool):
     async def execute(self, action: str) -> str:
         action = action.strip().lower()
 
+        # ── Windows Power Commands ─────────────────────────────────────────
+        if sys.platform == "win32":
+            if action == "lock":
+                asyncio.create_task(self._run_bg(["rundll32.exe", "user32.dll,LockWorkStation"]))
+                return "🔒 Windows workstation session **locked**."
+            elif action in ("screen-off", "dpms-off"):
+                cmd = ["powershell", "-Command", "(Add-Type '[DllImport(\"user32.dll\")]public static extern int SendMessage(int hWnd, int hMsg, int wParam, int lParam);' -Name a -Pas)::SendMessage(-1, 0x0112, 0xF170, 2)"]
+                asyncio.create_task(self._run_bg(cmd))
+                return "💤 Windows display turned **off**."
+            elif action in ("screen-on", "dpms-on"):
+                return "ℹ️ Move mouse or press any key to wake Windows displays."
+            elif action in ("suspend", "sleep"):
+                asyncio.create_task(self._run_bg(["rundll32.exe", "powrprof.dll,SetSuspendState", "0,1,0"]))
+                return "🌙 Windows entering **sleep mode**."
+            elif action == "hibernate":
+                asyncio.create_task(self._run_bg(["shutdown", "/h"]))
+                return "❄️ Windows entering **hibernation**."
+            elif action == "reboot":
+                asyncio.create_task(self._run_bg(["shutdown", "/r", "/t", "5"]))
+                return "🔄 Windows **reboot initiated** (in 5s)."
+            elif action in ("shutdown", "poweroff"):
+                asyncio.create_task(self._run_bg(["shutdown", "/s", "/t", "5"]))
+                return "🛑 Windows **shutdown initiated** (in 5s)."
+            return f"Error: Unknown power action '{action}'."
+
+        # ── Linux Power Commands ───────────────────────────────────────────
         if action == "lock":
             # Try hyprlock, swaylock, loginctl lock-session
             for cmd in [["hyprlock"], ["swaylock"], ["loginctl", "lock-session"]]:
