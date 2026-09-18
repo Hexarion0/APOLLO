@@ -9,7 +9,7 @@ logger = logging.getLogger("apollo.memory")
 class SQLiteMemoryStore:
     """Persistent SQLite memory store for APOLLO memories and conversation history."""
 
-    def __init__(self, db_path: Path = Path("apollo.db")):
+    def __init__(self, db_path: Path = Path("data/apollo.db")):
         self.db_path = db_path
         self._init_db()
 

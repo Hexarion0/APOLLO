@@ -1,6 +1,6 @@
 @echo off
 title Install APOLLO Auto-Start (Windows)
-cd /d "%~dp0"
+cd /d "%~dp0..\.."
 
 echo ====================================================
 echo        Installing APOLLO Auto-Start on Windows
@@ -10,7 +10,7 @@ echo.
 set "STARTUP_FOLDER=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup"
 set "SHORTCUT_PATH=%STARTUP_FOLDER%\APOLLO.lnk"
 set "TARGET_PATH=%~dp0start_windows_background.vbs"
-set "WORKING_DIR=%~dp0"
+set "WORKING_DIR=%cd%"
 
 echo Target: %TARGET_PATH%
 echo Startup Folder: %STARTUP_FOLDER%

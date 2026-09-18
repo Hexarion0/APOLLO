@@ -1,6 +1,6 @@
 @echo off
 title APOLLO - Windows Launcher
-cd /d "%~dp0"
+cd /d "%~dp0..\.."
 
 echo ====================================================
 echo             APOLLO Launcher for Windows

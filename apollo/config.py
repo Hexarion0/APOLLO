@@ -162,9 +162,9 @@ class Config:
 
         # Paths
         policy_file = Path(os.getenv("POLICY_FILE") or paths_json.get("policy_file") or "policy.json")
-        audit_log_file = Path(os.getenv("AUDIT_LOG_FILE") or paths_json.get("audit_log_file") or "audit.log")
-        chat_log_file = Path(os.getenv("CHAT_LOG_FILE") or paths_json.get("chat_log_file") or "chat.log")
-        database_path = Path(os.getenv("DATABASE_PATH") or paths_json.get("database_path") or "apollo.db")
+        audit_log_file = Path(os.getenv("AUDIT_LOG_FILE") or paths_json.get("audit_log_file") or "logs/audit.log")
+        chat_log_file = Path(os.getenv("CHAT_LOG_FILE") or paths_json.get("chat_log_file") or "logs/chat.log")
+        database_path = Path(os.getenv("DATABASE_PATH") or paths_json.get("database_path") or "data/apollo.db")
 
         return cls(
             provider=ProviderConfig(

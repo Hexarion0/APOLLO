@@ -125,7 +125,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         except subprocess.CalledProcessError as e:
             print(f"{RED}✗ Failed to start service: {e}{RESET}")
     else:
-        vbs_path = BASE_DIR / "start_windows_background.vbs"
+        vbs_path = BASE_DIR / "scripts" / "windows" / "start_windows_background.vbs"
         if vbs_path.exists():
             try:
                 subprocess.Popen(["wscript.exe", str(vbs_path)], cwd=str(BASE_DIR))
@@ -133,7 +133,7 @@ def cmd_start(args: argparse.Namespace) -> None:
             except Exception as e:
                 print(f"{RED}✗ Failed to launch: {e}{RESET}")
         else:
-            bat_path = BASE_DIR / "start_windows.bat"
+            bat_path = BASE_DIR / "scripts" / "windows" / "start_windows.bat"
             subprocess.Popen([str(bat_path)], cwd=str(BASE_DIR), shell=True)
             print(f"{GREEN}✓ APOLLO launched via start_windows.bat.{RESET}")
 
@@ -304,10 +304,10 @@ def cmd_autostart(args: argparse.Namespace) -> None:
     else:
         # Windows Startup folder
         if action in ("enable", "on"):
-            bat = BASE_DIR / "install_autostart_windows.bat"
+            bat = BASE_DIR / "scripts" / "windows" / "install_autostart_windows.bat"
             subprocess.run([str(bat)], shell=True)
         elif action in ("disable", "off"):
-            bat = BASE_DIR / "uninstall_autostart_windows.bat"
+            bat = BASE_DIR / "scripts" / "windows" / "uninstall_autostart_windows.bat"
             subprocess.run([str(bat)], shell=True)
         else:
             startup_lnk = Path(os.path.expandvars(r"%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\APOLLO.lnk"))
