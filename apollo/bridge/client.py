@@ -77,6 +77,35 @@ class BridgeClient:
         """Send a desktop notification via the bridge."""
         return await self._post("/notify", {"title": title, "body": body, "urgency": urgency})
 
+    async def pc_control(
+        self,
+        action: str,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        button: str = "left",
+        text: Optional[str] = None,
+        keys: Optional[str] = None,
+        direction: str = "down",
+        amount: int = 3,
+    ) -> Dict[str, Any]:
+        """
+        Send a PC control action to the bridge.
+
+        Actions: mouse_move, mouse_click, mouse_scroll, key_press, type_text,
+                 app_launch, open_url, window_focus, window_list, get_cursor_pos
+        """
+        payload: Dict[str, Any] = {"action": action, "button": button, "direction": direction, "amount": amount}
+        if x is not None:
+            payload["x"] = x
+        if y is not None:
+            payload["y"] = y
+        if text is not None:
+            payload["text"] = text
+        if keys is not None:
+            payload["keys"] = keys
+        return await self._post("/pc_control", payload)
+
+
     async def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         try:
             import aiohttp

@@ -1,0 +1,15 @@
+[Unit]
+Description=ydotoold — ydotool input simulation daemon (Wayland)
+Documentation=man:ydotoold(1)
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/ydotoold --socket-path /tmp/.ydotool_socket
+Restart=on-failure
+RestartSec=3s
+Environment=XDG_RUNTIME_DIR=/run/user/%U
+
+[Install]
+WantedBy=graphical-session.target

@@ -33,9 +33,10 @@ from apollo.tools.builtins import (
 )
 from apollo.tools.internet import DownloadFileTool, FetchURLTool, GetWeatherTool, WebSearchTool
 from apollo.tools.vision import AnalyzeImageTool
-from apollo.tools.desktop import TakeScreenshotTool, MediaControlTool, SystemPowerTool
-from apollo.tools.reminders import SetReminderTool, ListRemindersTool, CancelReminderTool
+from apollo.tools.desktop import TakeScreenshotTool, MediaControlTool, SystemPowerTool, PCControlTool
+from apollo.tools.reminders import SetReminderTool, ListRemindersTool, CancelReminderTool, ScheduleFollowupTool
 from apollo.tools.registry import ToolRegistry
+from apollo.scheduler.thought_engine import ThoughtEngine
 
 from apollo.persona import DEFAULT_PERSONA_PROMPT, get_proactive_prompt_for_time
 
@@ -80,20 +81,40 @@ class ApolloGateway:
             memory_store=self.memory_store,
         )
 
+        # Autonomous Thought Engine (Urgency-based check-ins, backoff, and stashing)
+        self.thought_engine = ThoughtEngine(
+            memory_store=self.memory_store,
+            scheduler=self.scheduler,
+            notify_callback=self._notify_thought_checkin,
+            config=getattr(self.config, "thought_engine", None),
+        )
+
         # Tool Registry
         self.tools = ToolRegistry()
         self._register_default_tools()
 
-    def get_system_prompt(self) -> str:
-        """Load personality prompt from persona file if available."""
+    async def _notify_thought_checkin(self, recipient_id: str, text: str) -> None:
+        """Send proactive thought check-in notification to recipient."""
+        if self.channel and recipient_id != "0":
+            await self.channel.send_message(recipient_id=recipient_id, text=text)
+
+    def get_system_prompt(self, sender_id: Optional[str] = None) -> str:
+        """Load personality prompt from persona file if available and inject stashed thoughts."""
+        base_prompt = DEFAULT_PERSONA_PROMPT
         if self.config.persona_file and self.config.persona_file.exists():
             try:
                 content = self.config.persona_file.read_text(encoding="utf-8").strip()
                 if content:
-                    return content
+                    base_prompt = content
             except Exception as e:
                 logger.warning(f"Error reading persona file '{self.config.persona_file}': {e}")
-        return DEFAULT_PERSONA_PROMPT
+
+        if sender_id and self.thought_engine:
+            stashed_context = self.thought_engine.get_stashed_context_prompt(sender_id)
+            if stashed_context:
+                base_prompt = f"{base_prompt}\n\n{stashed_context}"
+
+        return base_prompt
 
     def _register_default_tools(self) -> None:
         """Register built-in system tools."""
@@ -130,10 +151,17 @@ class ApolloGateway:
         )
         self.tools.register(MediaControlTool())
         self.tools.register(SystemPowerTool())
-        # Reminder tools
+        self.tools.register(PCControlTool())
+        # Reminder & Thought tools
         self.tools.register(SetReminderTool(scheduler=self.scheduler))
         self.tools.register(ListRemindersTool(scheduler=self.scheduler))
         self.tools.register(CancelReminderTool(scheduler=self.scheduler))
+        self.tools.register(
+            ScheduleFollowupTool(
+                thought_engine=self.thought_engine,
+                owner_id=str(self.config.telegram.owner_id) if self.config.telegram.owner_id else None,
+            )
+        )
 
     async def start(self) -> None:
         """Start APOLLO Gateway engine, channel, and scheduler."""
@@ -176,15 +204,42 @@ class ApolloGateway:
         self.scheduler.stop()
         if self.channel:
             await self.channel.stop()
+        # Close persistent HTTP connection pool
+        if hasattr(self.provider, "close"):
+            try:
+                await self.provider.close()
+            except Exception as e:
+                logger.debug(f"Provider close error: {e}")
         self.chat_logger.log_session_end()
         logger.info("APOLLO Gateway offline.")
+
+    async def reload(self) -> dict:
+        """Hot-reload config.json and re-apply settings without a process restart.
+
+        persona.txt is already read from disk on every message — no action needed.
+        Returns a dict describing what was reloaded.
+        """
+        logger.info("Hot-reloading APOLLO configuration...")
+        try:
+            new_cfg = Config.load()
+            self.config = new_cfg
+            # Re-instantiate the complexity router with updated model settings
+            self.router = ComplexityRouter(config=self.config.provider)
+            logger.info("Hot-reload complete: config.json and model router updated.")
+            return {"status": "ok", "reloaded": ["config.json", "model_router"]}
+        except Exception as e:
+            logger.error(f"Hot-reload failed: {e}")
+            return {"status": "error", "error": str(e)}
 
     async def _handle_scheduled_task(self, task_id: str, prompt: str) -> None:
         """Execute autonomous background scheduled task and notify owner."""
         logger.info(f"Executing scheduled task [{task_id}]: {prompt}")
         owner_id = str(self.config.telegram.owner_id)
 
-        if task_id.startswith("reminder_"):
+        if task_id.startswith("thought_checkin_"):
+            thought_id = task_id.replace("thought_checkin_", "")
+            await self.thought_engine.handle_checkin(thought_id)
+        elif task_id.startswith("reminder_"):
             # One-shot precision timer / reminder
             if self.channel and owner_id != "0":
                 await self.channel.send_message(
@@ -289,12 +344,12 @@ class ApolloGateway:
         """Use ComplexityRouter to pick the best model tier for this message.
 
         Returns:
-            (model_name: str, cleaned_prompt: str)  — prompt is stripped of tier override prefixes.
+            (model_name: str, cleaned_prompt: str, tier: ModelTier)
         """
         from apollo.providers.router import ModelTier
         tier, cleaned = self.router.classify(user_message)
         model = self.router.get_model_for_prompt(user_message)
-        return model, cleaned
+        return model, cleaned, tier
 
     async def process_message(
         self,
@@ -333,7 +388,7 @@ class ApolloGateway:
             limit=self.config.gateway.chat_history_limit,
         )
 
-        system_prompt = self.get_system_prompt()
+        system_prompt = self.get_system_prompt(sender_id=sender_id)
         messages: List[ChatMessage] = [ChatMessage(role="system", content=system_prompt)]
         messages.extend(self._sanitize_chat_history(history))
 
@@ -350,8 +405,9 @@ class ApolloGateway:
         tool_schemas = self.tools.get_openai_schemas()
 
         # Classify prompt complexity and select appropriate model tier
-        selected_model, cleaned_user_message = self._select_model(user_message)
-        logger.debug(f"Model router selected: {selected_model} for prompt (len={len(user_message)})")
+        from apollo.providers.router import ModelTier
+        selected_model, cleaned_user_message, selected_tier = self._select_model(user_message)
+        logger.debug(f"Model router selected: {selected_model} (tier: {selected_tier.value}) for prompt (len={len(user_message)})")
 
         # Accumulate all thinking blocks across turns
         all_thinking: List[str] = []
@@ -390,8 +446,10 @@ class ApolloGateway:
                 if not response.tool_calls:
                     final_content = response.content or "No response generated."
                     if response.was_fallback and response.model_used:
-                        logger.info(f"Primary model unavailable. Response delivered via fallback model '{response.model_used}'.")
-                        final_content += f"\n\n_(ℹ️ Responded via fallback model: `{response.model_used}`)_"
+                        err_detail = f" • Error: {response.fallback_error}" if response.fallback_error else ""
+                        logger.info(f"Fallback model used: '{response.model_used}'{err_detail}")
+                    elif selected_tier == ModelTier.FAST:
+                        logger.info(f"Fast model used: '{response.model_used or selected_model}'")
 
                     messages.append(ChatMessage(role="assistant", content=final_content))
                     self.memory_store.add_chat_message(channel=channel_name, sender_id=sender_id, role="assistant", content=final_content)
@@ -513,6 +571,11 @@ class ApolloGateway:
                 if final_synth.thinking:
                     all_thinking.append(final_synth.thinking)
                 final_content = final_synth.content or "Completed requested actions."
+                if final_synth.was_fallback and final_synth.model_used:
+                    err_detail = f" • Error: `{final_synth.fallback_error}`" if final_synth.fallback_error else ""
+                    final_content += f"\n\n_(⚠️ Fallback model used: `{final_synth.model_used}`{err_detail})_"
+                elif selected_tier == ModelTier.FAST:
+                    final_content += f"\n\n_(⚡ Switched to fast model: `{final_synth.model_used or selected_model}`)_"
             except Exception as synth_err:
                 logger.warning(f"Final synthesis pass encountered error: {synth_err}")
                 final_content = "Completed requested actions."

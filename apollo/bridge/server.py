@@ -252,6 +252,156 @@ async def handle_notify(request):
     return web.json_response({"ok": rc == 0})
 
 
+async def handle_pc_control(request):
+    """Bridge endpoint for PCControlTool: mouse, keyboard, windows, apps."""
+    if not _check_token(request):
+        return web.json_response({"error": "Unauthorized"}, status=401)
+
+    data = await request.json()
+    action = data.get("action", "").strip().lower()
+    x = data.get("x")
+    y = data.get("y")
+    button = data.get("button", "left")
+    text = data.get("text")
+    keys = data.get("keys")
+    direction = data.get("direction", "down")
+    amount = int(data.get("amount", 3))
+
+    ydotool = await _which("ydotool")
+    hyprctl = await _which("hyprctl")
+
+    BUTTON_MAP = {"left": "1", "middle": "2", "right": "3"}
+    SCROLL_MAP = {"down": ("3", "3"), "up": ("3", "-3"), "right": ("2", "3"), "left": ("2", "-3")}
+
+    if action == "mouse_move":
+        if x is None or y is None:
+            return web.json_response({"error": "mouse_move requires x and y"}, status=400)
+        if not ydotool:
+            return web.json_response({"error": "ydotool not found"}, status=503)
+        rc, _, err = await _run([ydotool, "mousemove", "--x", str(x), "--y", str(y)])
+        if rc != 0:
+            return web.json_response({"error": f"mouse_move failed: {err}"}, status=500)
+        return web.json_response({"ok": True, "message": f"🖱️ Mouse moved to `({x}, {y})`."})
+
+    elif action == "mouse_click":
+        if not ydotool:
+            return web.json_response({"error": "ydotool not found"}, status=503)
+        btn = BUTTON_MAP.get(button, "1")
+        if x is not None and y is not None:
+            rc, _, err = await _run([ydotool, "mousemove", "--x", str(x), "--y", str(y)])
+            if rc != 0:
+                return web.json_response({"error": f"mouse_move failed: {err}"}, status=500)
+            await asyncio.sleep(0.05)
+        rc, _, err = await _run([ydotool, "click", btn])
+        if rc != 0:
+            return web.json_response({"error": f"mouse_click failed: {err}"}, status=500)
+        pos_str = f" at `({x}, {y})`" if x is not None and y is not None else ""
+        return web.json_response({"ok": True, "message": f"🖱️ {button.capitalize()} click{pos_str}."})
+
+    elif action == "mouse_scroll":
+        if not ydotool:
+            return web.json_response({"error": "ydotool not found"}, status=503)
+        axis, base_val = SCROLL_MAP.get(direction, ("3", "3"))
+        val = str(int(base_val) * max(1, amount) // 3) if amount != 3 else base_val
+        rc, _, err = await _run([ydotool, "scroll", "--axis", axis, "--value", val])
+        if rc != 0:
+            key_map = {"down": "Next", "up": "Prior", "left": "Left", "right": "Right"}
+            fallback_key = key_map.get(direction, "Next")
+            for _ in range(min(amount, 10)):
+                await _run([ydotool, "key", fallback_key])
+            return web.json_response({"ok": True, "message": f"🖱️ Scrolled {direction} ×{amount} (key fallback)."})
+        return web.json_response({"ok": True, "message": f"🖱️ Scrolled {direction} ×{amount}."})
+
+    elif action == "key_press":
+        if not keys:
+            return web.json_response({"error": "key_press requires 'keys' parameter"}, status=400)
+        if not ydotool:
+            return web.json_response({"error": "ydotool not found"}, status=503)
+        rc, _, err = await _run([ydotool, "key", keys])
+        if rc != 0:
+            return web.json_response({"error": f"key_press failed: {err}"}, status=500)
+        return web.json_response({"ok": True, "message": f"⌨️ Pressed `{keys}`."})
+
+    elif action == "type_text":
+        if not text:
+            return web.json_response({"error": "type_text requires 'text' parameter"}, status=400)
+        if not ydotool:
+            return web.json_response({"error": "ydotool not found"}, status=503)
+        rc, _, err = await _run([ydotool, "type", "--delay", "30", "--", text])
+        if rc != 0:
+            return web.json_response({"error": f"type_text failed: {err}"}, status=500)
+        preview = text[:50] + ("…" if len(text) > 50 else "")
+        return web.json_response({"ok": True, "message": f"⌨️ Typed: `{preview}`"})
+
+    elif action == "app_launch":
+        if not text:
+            return web.json_response({"error": "app_launch requires 'text' parameter"}, status=400)
+        if hyprctl:
+            rc, _, _ = await _run(["hyprctl", "dispatch", "exec", text])
+            if rc == 0:
+                return web.json_response({"ok": True, "message": f"🚀 Launched `{text}` via Hyprland."})
+        try:
+            subprocess.Popen(text.split(), env=os.environ, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return web.json_response({"ok": True, "message": f"🚀 Launched `{text}`."})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
+    elif action == "open_url":
+        if not text:
+            return web.json_response({"error": "open_url requires 'text' parameter"}, status=400)
+        xdg = await _which("xdg-open")
+        if xdg:
+            rc, _, err = await _run([xdg, text])
+            if rc == 0:
+                return web.json_response({"ok": True, "message": f"🌐 Opened `{text}` in default browser."})
+        for browser in ["zen-browser", "firefox", "brave"]:
+            b = await _which(browser)
+            if b:
+                subprocess.Popen([b, text], env=os.environ, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return web.json_response({"ok": True, "message": f"🌐 Opened `{text}` in `{browser}`."})
+        return web.json_response({"error": "No browser found to open URL"}, status=503)
+
+    elif action == "window_focus":
+        if not text:
+            return web.json_response({"error": "window_focus requires 'text' parameter"}, status=400)
+        if not hyprctl:
+            return web.json_response({"error": "hyprctl not found"}, status=503)
+        for match in [f"class:{text}", f"title:{text}", text]:
+            rc, _, _ = await _run(["hyprctl", "dispatch", "focuswindow", match])
+            if rc == 0:
+                return web.json_response({"ok": True, "message": f"🪟 Focused window: `{text}`."})
+        return web.json_response({"error": f"No window matching '{text}' found"}, status=404)
+
+    elif action == "window_list":
+        if not hyprctl:
+            return web.json_response({"error": "hyprctl not found"}, status=503)
+        rc, out, err = await _run(["hyprctl", "clients", "-j"])
+        if rc != 0:
+            return web.json_response({"error": f"hyprctl failed: {err}"}, status=500)
+        import json as _json
+        try:
+            clients = _json.loads(out)
+            lines = ["🪟 **Open Windows:**\n"]
+            for c in clients:
+                cls = c.get("class", "?")
+                title = c.get("title", "")[:60]
+                ws = c.get("workspace", {}).get("name", "?")
+                lines.append(f"• `{cls}` — *{title}* (ws: {ws})")
+            msg = "\n".join(lines) if len(lines) > 1 else "🪟 No open windows."
+            return web.json_response({"ok": True, "message": msg})
+        except Exception:
+            return web.json_response({"ok": True, "message": f"🪟 Windows:\n```\n{out[:800]}\n```"})
+
+    elif action == "get_cursor_pos":
+        if hyprctl:
+            rc, out, _ = await _run(["hyprctl", "cursorpos"])
+            if rc == 0 and out:
+                return web.json_response({"ok": True, "message": f"🖱️ Cursor position: `{out}`"})
+        return web.json_response({"error": "hyprctl not available"}, status=503)
+
+    return web.json_response({"error": f"Unknown action: {action}"}, status=400)
+
+
 # ---------------------------------------------------------------------------
 # App factory & entrypoint
 # ---------------------------------------------------------------------------
@@ -262,7 +412,9 @@ def create_app() -> "web.Application":
     app.router.add_post("/screenshot", handle_screenshot)
     app.router.add_post("/media", handle_media)
     app.router.add_post("/notify", handle_notify)
+    app.router.add_post("/pc_control", handle_pc_control)
     return app
+
 
 
 def main():

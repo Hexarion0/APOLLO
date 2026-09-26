@@ -819,3 +819,321 @@ class SystemPowerTool(BaseTool):
             await proc.wait()
         except Exception as e:
             logger.error(f"Error running background power command {cmd}: {e}")
+
+
+class PCControlTool(BaseTool):
+    """Control the desktop PC via ydotool (mouse/keyboard) and hyprctl (windows/apps)."""
+
+    name = "pc_control"
+    description = (
+        "Control the desktop PC: move mouse, click, right-click, type text, press keyboard "
+        "shortcuts, scroll, launch applications, open URLs in the default browser (Zen), "
+        "focus or list windows, and get the current cursor position. "
+        "Uses ydotool for input simulation and hyprctl for Hyprland window management. "
+        "Combine with take_screenshot to see the screen and interact with what you see."
+    )
+    parameters = {
+        "type": "object",
+        "properties": {
+            "action": {
+                "type": "string",
+                "enum": [
+                    "mouse_move",
+                    "mouse_click",
+                    "mouse_scroll",
+                    "key_press",
+                    "type_text",
+                    "app_launch",
+                    "open_url",
+                    "window_focus",
+                    "window_list",
+                    "get_cursor_pos",
+                ],
+                "description": (
+                    "The control action to perform:\n"
+                    "- mouse_move: Move cursor to (x, y)\n"
+                    "- mouse_click: Click at (x, y) with left/right/middle button\n"
+                    "- mouse_scroll: Scroll up/down/left/right at current position\n"
+                    "- key_press: Press a key or combo e.g. 'ctrl+c', 'super+d', 'Return', 'alt+F4'\n"
+                    "- type_text: Type a string of text into the focused window\n"
+                    "- app_launch: Launch an application by name or command\n"
+                    "- open_url: Open a URL in the default browser (Zen Browser)\n"
+                    "- window_focus: Focus a window by its class or title fragment\n"
+                    "- window_list: List all open windows with their class, title, workspace\n"
+                    "- get_cursor_pos: Get the current cursor X,Y position"
+                ),
+            },
+            "x": {
+                "type": "integer",
+                "description": "X coordinate in pixels. Used for mouse_move and mouse_click.",
+            },
+            "y": {
+                "type": "integer",
+                "description": "Y coordinate in pixels. Used for mouse_move and mouse_click.",
+            },
+            "button": {
+                "type": "string",
+                "enum": ["left", "right", "middle"],
+                "description": "Mouse button for mouse_click. Defaults to 'left'.",
+            },
+            "text": {
+                "type": "string",
+                "description": (
+                    "Text payload depending on action:\n"
+                    "- type_text: the string to type\n"
+                    "- app_launch: app name or command (e.g. 'firefox', 'spotify', 'kitty')\n"
+                    "- open_url: the URL to open (e.g. 'https://google.com')\n"
+                    "- window_focus: window class or title fragment to match"
+                ),
+            },
+            "keys": {
+                "type": "string",
+                "description": (
+                    "Key or key combo to press for key_press action. "
+                    "Examples: 'ctrl+c', 'ctrl+v', 'super+d', 'alt+F4', 'Return', 'Escape', "
+                    "'ctrl+shift+t', 'super+shift+q', 'F5'."
+                ),
+            },
+            "direction": {
+                "type": "string",
+                "enum": ["up", "down", "left", "right"],
+                "description": "Scroll direction for mouse_scroll. Defaults to 'down'.",
+            },
+            "amount": {
+                "type": "integer",
+                "description": "Number of scroll steps for mouse_scroll. Defaults to 3.",
+            },
+        },
+        "required": ["action"],
+    }
+
+    # ydotool button codes
+    _BUTTON_MAP = {"left": "1", "middle": "2", "right": "3"}
+    # scroll axis/value: axis 3 = vertical (REL_WHEEL), negative = up, positive = down
+    _SCROLL_MAP = {"down": ("3", "3"), "up": ("3", "-3"), "right": ("2", "3"), "left": ("2", "-3")}
+
+    async def execute(
+        self,
+        action: str,
+        x: Optional[int] = None,
+        y: Optional[int] = None,
+        button: str = "left",
+        text: Optional[str] = None,
+        keys: Optional[str] = None,
+        direction: str = "down",
+        amount: int = 3,
+        **kwargs,
+    ) -> str:
+        action = action.strip().lower()
+
+        # ── Try bridge first ─────────────────────────────────────────────────
+        bridge = _get_bridge()
+        if await bridge.is_available():
+            result = await bridge.pc_control(
+                action=action, x=x, y=y, button=button,
+                text=text, keys=keys, direction=direction, amount=amount,
+            )
+            if "error" in result:
+                return f"❌ PC control bridge error: {result['error']}"
+            return result.get("message", f"✅ `{action}` executed via bridge.")
+
+        # ── Direct execution fallback ─────────────────────────────────────────
+        return await self._execute_direct(action, x, y, button, text, keys, direction, amount)
+
+    async def _execute_direct(
+        self,
+        action: str,
+        x: Optional[int],
+        y: Optional[int],
+        button: str,
+        text: Optional[str],
+        keys: Optional[str],
+        direction: str,
+        amount: int,
+    ) -> str:
+        ydotool = await self._which("ydotool")
+        hyprctl = await self._which("hyprctl")
+
+        if action == "mouse_move":
+            if x is None or y is None:
+                return "❌ mouse_move requires `x` and `y` coordinates."
+            if not ydotool:
+                return "❌ ydotool not found. Install: sudo pacman -S ydotool"
+            rc, _, err = await self._run([ydotool, "mousemove", "--x", str(x), "--y", str(y)])
+            if rc != 0:
+                return f"❌ mouse_move failed: {err}"
+            return f"🖱️ Mouse moved to `({x}, {y})`."
+
+        elif action == "mouse_click":
+            if not ydotool:
+                return "❌ ydotool not found. Install: sudo pacman -S ydotool"
+            btn = self._BUTTON_MAP.get(button, "1")
+            cmds = []
+            if x is not None and y is not None:
+                cmds.append([ydotool, "mousemove", "--x", str(x), "--y", str(y)])
+            cmds.append([ydotool, "click", btn])
+            for cmd in cmds:
+                rc, _, err = await self._run(cmd)
+                if rc != 0:
+                    return f"❌ mouse_click failed: {err}"
+                await asyncio.sleep(0.05)
+            pos_str = f" at `({x}, {y})`" if x is not None and y is not None else ""
+            return f"🖱️ {button.capitalize()} click{pos_str}."
+
+        elif action == "mouse_scroll":
+            if not ydotool:
+                return "❌ ydotool not found. Install: sudo pacman -S ydotool"
+            axis, base_val = self._SCROLL_MAP.get(direction, ("3", "3"))
+            # Scale value by amount
+            val = str(int(base_val) * max(1, amount) // 3) if amount != 3 else base_val
+            rc, _, err = await self._run([ydotool, "scroll", "--axis", axis, "--value", val])
+            if rc != 0:
+                # Fallback: use key presses for scroll
+                key_map = {"down": "Next", "up": "Prior", "left": "Left", "right": "Right"}
+                fallback_key = key_map.get(direction, "Next")
+                for _ in range(min(amount, 10)):
+                    await self._run([ydotool, "key", fallback_key])
+                return f"🖱️ Scrolled {direction} ×{amount} (key fallback)."
+            return f"🖱️ Scrolled {direction} ×{amount}."
+
+        elif action == "key_press":
+            if not keys:
+                return "❌ key_press requires the `keys` parameter (e.g. 'ctrl+c', 'Return')."
+            if not ydotool:
+                return "❌ ydotool not found. Install: sudo pacman -S ydotool"
+            rc, _, err = await self._run([ydotool, "key", keys])
+            if rc != 0:
+                return f"❌ key_press `{keys}` failed: {err}"
+            return f"⌨️ Pressed `{keys}`."
+
+        elif action == "type_text":
+            if not text:
+                return "❌ type_text requires the `text` parameter."
+            if not ydotool:
+                return "❌ ydotool not found. Install: sudo pacman -S ydotool"
+            rc, _, err = await self._run([ydotool, "type", "--delay", "30", "--", text])
+            if rc != 0:
+                return f"❌ type_text failed: {err}"
+            preview = text[:50] + ("…" if len(text) > 50 else "")
+            return f"⌨️ Typed: `{preview}`"
+
+        elif action == "app_launch":
+            if not text:
+                return "❌ app_launch requires the `text` parameter (app name or command)."
+            if hyprctl:
+                rc, _, err = await self._run(["hyprctl", "dispatch", "exec", text])
+                if rc == 0:
+                    return f"🚀 Launched `{text}` via Hyprland."
+            # Fallback: direct exec
+            try:
+                await asyncio.create_subprocess_exec(
+                    *text.split(),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                    env={**os.environ},
+                )
+                return f"🚀 Launched `{text}`."
+            except Exception as e:
+                return f"❌ app_launch `{text}` failed: {e}"
+
+        elif action == "open_url":
+            if not text:
+                return "❌ open_url requires the `text` parameter (URL)."
+            xdg = await self._which("xdg-open")
+            if not xdg:
+                return "❌ xdg-open not found — cannot open URL."
+            rc, _, err = await self._run([xdg, text])
+            if rc != 0:
+                # Try launching zen-browser or firefox directly
+                for browser in ["zen-browser", "firefox", "brave", "chromium"]:
+                    b = await self._which(browser)
+                    if b:
+                        await asyncio.create_subprocess_exec(
+                            b, text,
+                            stdout=asyncio.subprocess.DEVNULL,
+                            stderr=asyncio.subprocess.DEVNULL,
+                        )
+                        return f"🌐 Opened `{text}` in `{browser}`."
+                return f"❌ Could not open URL: {err}"
+            return f"🌐 Opened `{text}` in default browser."
+
+        elif action == "window_focus":
+            if not text:
+                return "❌ window_focus requires the `text` parameter (class or title fragment)."
+            if not hyprctl:
+                return "❌ hyprctl not found — Hyprland required for window management."
+            # Try by class first, then by title
+            rc, _, _ = await self._run(["hyprctl", "dispatch", "focuswindow", f"class:{text}"])
+            if rc != 0:
+                rc, _, err = await self._run(["hyprctl", "dispatch", "focuswindow", f"title:{text}"])
+            if rc != 0:
+                # Try substring match
+                rc, _, err = await self._run(["hyprctl", "dispatch", "focuswindow", text])
+            if rc != 0:
+                return f"❌ Could not focus window matching `{text}`. Use window_list to see open windows."
+            return f"🪟 Focused window: `{text}`."
+
+        elif action == "window_list":
+            if not hyprctl:
+                return "❌ hyprctl not found — Hyprland required for window management."
+            rc, out, err = await self._run(["hyprctl", "clients", "-j"])
+            if rc != 0:
+                return f"❌ Could not list windows: {err}"
+            try:
+                import json as _json
+                clients = _json.loads(out)
+                if not clients:
+                    return "🪟 No open windows found."
+                lines = ["🪟 **Open Windows:**\n"]
+                for c in clients:
+                    cls = c.get("class", "?")
+                    title = c.get("title", "")[:60]
+                    ws = c.get("workspace", {}).get("name", "?")
+                    addr = c.get("address", "")[-6:]
+                    lines.append(f"• `{cls}` — *{title}* (ws: {ws}, addr: …{addr})")
+                return "\n".join(lines)
+            except Exception as e:
+                return f"🪟 Windows (raw):\n```\n{out[:1000]}\n```"
+
+        elif action == "get_cursor_pos":
+            if hyprctl:
+                rc, out, _ = await self._run(["hyprctl", "cursorpos"])
+                if rc == 0 and out:
+                    return f"🖱️ Cursor position: `{out}`"
+            if ydotool:
+                # ydotool doesn't have a get-pos, use hyprctl only
+                pass
+            return "❌ Could not get cursor position (hyprctl not available)."
+
+        return f"❌ Unknown action: `{action}`"
+
+    async def _which(self, binary: str) -> Optional[str]:
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "which", binary,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            stdout, _ = await proc.communicate()
+            if proc.returncode == 0:
+                return stdout.decode().strip()
+        except Exception:
+            pass
+        return None
+
+    async def _run(self, cmd: list) -> tuple:
+        """Run command, return (returncode, stdout, stderr)."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env={**os.environ},
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
+            return proc.returncode, stdout.decode().strip(), stderr.decode().strip()
+        except asyncio.TimeoutError:
+            return -1, "", "timeout"
+        except Exception as e:
+            return -1, "", str(e)
+
