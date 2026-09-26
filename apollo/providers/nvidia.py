@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from typing import Any, Awaitable, Callable, Dict, List, Optional
+import httpx
 from openai import AsyncOpenAI
 
 from apollo.providers.base import BaseLLMProvider, ChatMessage, LLMResponse, ToolCall
@@ -61,20 +62,28 @@ class NvidiaNIMProvider(BaseLLMProvider):
             "nvidia/neva-22b",
         ]
         self.vision_model = vision_model
-        self._client: Optional[AsyncOpenAI] = None
+        # Persistent HTTP connection pool — reuses TLS sessions, eliminates 100-300ms handshake overhead per call
+        self._http_client = httpx.AsyncClient(
+            transport=httpx.AsyncHTTPTransport(
+                limits=httpx.Limits(
+                    max_keepalive_connections=10,
+                    max_connections=20,
+                    keepalive_expiry=30.0,
+                ),
+            ),
+            timeout=120.0,
+        )
+        self._client: AsyncOpenAI = AsyncOpenAI(
+            api_key=self.api_key or "dummy_key",
+            base_url=self.base_url,
+            http_client=self._http_client,
+            max_retries=1,
+        )
 
-    @property
-    def client(self) -> AsyncOpenAI:
-        if self._client is None:
-            if not self.api_key:
-                logger.warning("NVIDIA_API_KEY is not set. NIM requests will fail if unauthenticated.")
-            self._client = AsyncOpenAI(
-                api_key=self.api_key or "dummy_key",
-                base_url=self.base_url,
-                timeout=120.0,
-                max_retries=1,
-            )
-        return self._client
+    async def close(self) -> None:
+        """Close the persistent HTTP connection pool."""
+        await self._http_client.aclose()
+        logger.debug("NvidiaNIMProvider HTTP connection pool closed.")
 
     async def generate_response(
         self,
@@ -102,6 +111,8 @@ class NvidiaNIMProvider(BaseLLMProvider):
         if model and not has_vision:
             candidate_models = [model] + [m for m in candidate_models if m != model]
 
+        primary_model = candidate_models[0]
+        failed_model_errors: List[str] = []
         last_exception = None
 
         for model_name in candidate_models:
@@ -121,7 +132,7 @@ class NvidiaNIMProvider(BaseLLMProvider):
                 for retry_attempt in range(2):
                     try:
                         if on_token is not None:
-                            stream = await self.client.chat.completions.create(
+                            stream = await self._client.chat.completions.create(
                                 **kwargs,
                                 stream=True,
                                 timeout=90.0,
@@ -218,16 +229,19 @@ class NvidiaNIMProvider(BaseLLMProvider):
 
                             full_content = "".join(accumulated_content) if accumulated_content else None
                             clean_content, thinking = _extract_thinking(full_content or "")
+                            is_fallback = (model_name != primary_model) or bool(failed_model_errors)
+                            fallback_err_str = "; ".join(failed_model_errors) if failed_model_errors else None
                             return LLMResponse(
                                 content=clean_content or None,
                                 tool_calls=parsed_tool_calls,
                                 finish_reason=finish_reason,
                                 model_used=model_name,
-                                was_fallback=(model_name != self.model),
+                                was_fallback=is_fallback,
+                                fallback_error=fallback_err_str,
                                 thinking=thinking,
                             )
                         else:
-                            response = await self.client.chat.completions.create(**kwargs, timeout=90.0)
+                            response = await self._client.chat.completions.create(**kwargs, timeout=90.0)
                             choice = response.choices[0]
                             message = choice.message
 
@@ -253,13 +267,16 @@ class NvidiaNIMProvider(BaseLLMProvider):
                             if reasoning and "<think>" not in raw_content.lower():
                                 raw_content = f"<think>\n{reasoning}\n</think>\n{raw_content}"
                             clean_content, thinking = _extract_thinking(raw_content)
+                            is_fallback = (model_name != primary_model) or bool(failed_model_errors)
+                            fallback_err_str = "; ".join(failed_model_errors) if failed_model_errors else None
                             return LLMResponse(
                                 content=clean_content or None,
                                 tool_calls=parsed_tool_calls,
                                 finish_reason=choice.finish_reason,
                                 raw_response=response,
                                 model_used=model_name,
-                                was_fallback=(model_name != self.model),
+                                was_fallback=is_fallback,
+                                fallback_error=fallback_err_str,
                                 thinking=thinking,
                             )
 
@@ -272,7 +289,10 @@ class NvidiaNIMProvider(BaseLLMProvider):
                             raise err
 
             except Exception as e:
+                err_summary = f"{model_name} ({type(e).__name__}: {str(e).strip()[:100]})"
+                failed_model_errors.append(err_summary)
                 logger.warning(f"Model '{model_name}' failed or timed out: {e}. Trying fallback models if available...")
                 last_exception = e
 
-        raise RuntimeError(f"All attempted NIM models failed. Last error: {last_exception}") from last_exception
+        errors_joined = "; ".join(failed_model_errors) if failed_model_errors else str(last_exception)
+        raise RuntimeError(f"All attempted NIM models failed ({errors_joined}). Last error: {last_exception}") from last_exception
